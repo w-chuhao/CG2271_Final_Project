@@ -20,23 +20,16 @@
 #include "queue.h"
 #include "semphr.h"
 
-/* =========================================================
-   PIN DEFINITIONS
-   ========================================================= */
 
-/* Built-in RGB LED (active-low) */
 #define RED_PIN                 30U    /* PTE30 */
 #define GREEN_PIN               5U     /* PTD5  */
 #define BLUE_PIN                29U    /* PTE29 */
 
-/* ADC channels */
+
 #define PHOTO_ADC_CH            8U     /* PTB0 = ADC0_SE8 */
 #define MIC_ADC_CH              9U     /* PTB1 = ADC0_SE9 */
 
-/* Native onboard buttons based on the notes
-   SW2 = PTC3  -> Start monitoring
-   SW3 = PTA4  -> Acknowledge / reset alert
-*/
+
 #define SW2_START_PIN           3U     /* PTC3 = SW2 */
 #define SW3_ACK_PIN             4U     /* PTA4 = SW3 */
 
@@ -46,9 +39,6 @@
 #define MIC_P2P_THRESHOLD       9U
 #define DEBOUNCE_MS             200U
 
-/* =========================================================
-   TYPES
-   ========================================================= */
 
 typedef enum {
     RED, GREEN, BLUE
@@ -63,22 +53,20 @@ typedef struct {
     uint8_t p2pFlag;
 } SensorPacket;
 
-/* =========================================================
-   GLOBALS
-   ========================================================= */
+
 
 volatile uint16_t g_adcValue = 0;
 volatile bool g_adcDone = false;
 
-/* ISR event flags */
+
 volatile bool g_sw2StartPending = false;
 volatile bool g_sw3AckPending = false;
 
-/* ISR debounce ticks */
+
 volatile TickType_t g_lastSw2IsrTick = 0;
 volatile TickType_t g_lastSw3IsrTick = 0;
 
-/* Shared system state */
+
 bool g_systemStarted = false;
 bool g_alertLatched = false;
 SensorPacket g_latestPacket;
@@ -87,9 +75,7 @@ QueueHandle_t sensorQueue;
 SemaphoreHandle_t buttonSema;
 SemaphoreHandle_t statusMutex;
 
-/* =========================================================
-   LED FUNCTIONS
-   ========================================================= */
+
 
 void initLEDs(void) {
     SIM->SCGC5 |= (SIM_SCGC5_PORTD_MASK | SIM_SCGC5_PORTE_MASK);
@@ -135,9 +121,6 @@ void setRGB(bool r, bool g, bool b) {
     if (b) onLED(BLUE); else offLED(BLUE);
 }
 
-/* =========================================================
-   ADC FUNCTIONS
-   ========================================================= */
 
 void initADCInputs(void) {
     NVIC_DisableIRQ(ADC0_IRQn);
@@ -205,9 +188,6 @@ void readMicWindow(uint16_t *micRaw, uint16_t *micMin, uint16_t *micMax, uint16_
     *micP2P = maxVal - minVal;
 }
 
-/* =========================================================
-   BUTTON IRQ SETUP
-   ========================================================= */
 
 void initButtonIRQs(void) {
     NVIC_DisableIRQ(SW2_START_IRQ);
@@ -285,9 +265,7 @@ void PORTC_PORTD_IRQHandler(void) {
     portYIELD_FROM_ISR(hpw);
 }
 
-/* =========================================================
-   TASKS
-   ========================================================= */
+
 
 static void sensorTask(void *p) {
     (void)p;
@@ -319,7 +297,6 @@ static void sensorTask(void *p) {
 static void buttonTask(void *p) {
     (void)p;
 
-    /* FIXED: Enable interrupts ONLY after scheduler has safely started */
     initButtonIRQs();
 
     while (1) {
@@ -440,9 +417,6 @@ static void printTask(void *p) {
     }
 }
 
-/* =========================================================
-   MAIN
-   ========================================================= */
 
 int main(void) {
     BOARD_InitBootPins();
@@ -467,7 +441,6 @@ int main(void) {
         }
     }
 
-    /* FIXED: initButtonIRQs() has been moved to buttonTask() to prevent pre-scheduler crashes! */
 
     xTaskCreate(sensorTask, "sensor_task",
                 configMINIMAL_STACK_SIZE + 250, NULL, 2, NULL);
@@ -478,7 +451,6 @@ int main(void) {
     xTaskCreate(alertTask, "alert_task",
                 configMINIMAL_STACK_SIZE + 200, NULL, 2, NULL);
 
-    /* Slightly increased stack size for PRINTF safety */
     xTaskCreate(printTask, "print_task",
                 configMINIMAL_STACK_SIZE + 350, NULL, 1, NULL);
 
@@ -491,9 +463,7 @@ int main(void) {
     return 0;
 }
 
-/* =========================================================
-   FREERTOS HOOKS (Optional Debugging Safety Nets)
-   ========================================================= */
+
 
 void vApplicationMallocFailedHook(void) {
     /* Trap if RTOS runs out of heap memory */
