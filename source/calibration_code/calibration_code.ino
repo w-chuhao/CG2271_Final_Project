@@ -8,6 +8,8 @@
 
 #define MIC_PIN 13   // microphone A0 -> GPIO34
 
+#define BUZZER_PIN 23
+
 DHT dht(DHTPIN, DHTTYPE);
 
 float readDistanceCm() {
@@ -49,7 +51,8 @@ void setup() {
 
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
-
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
   analogReadResolution(12);   // ESP32 ADC: 0 to 4095
 
   dht.begin();
@@ -58,6 +61,16 @@ void setup() {
 }
 
 void loop() {
+  if (Serial.available() > 0) {
+    char command = Serial.read();
+    
+    if (command == 'A') {
+      digitalWrite(BUZZER_PIN, HIGH); // Sound the alarm
+    } else if (command == 'O') {
+      digitalWrite(BUZZER_PIN, LOW);  // Turn it off
+    }
+  }
+
   float distance = readDistanceCm();
   float humidity = dht.readHumidity();
   float temperature = dht.readTemperature();
@@ -65,40 +78,16 @@ void loop() {
   int micRaw, micMin, micMax, micP2P;
   readMicWindow(micRaw, micMin, micMax, micP2P);
 
+  // Print all the data out to the MCXC444 just like before
   Serial.print("DIST_CM=");
-  if (distance < 0) {
-    Serial.print("ERR");
-  } else {
-    Serial.print(distance, 2);
-  }
-
+  Serial.print(distance >= 0 ? distance : -1.0, 2);
   Serial.print(" | HUMIDITY=");
-  if (isnan(humidity)) {
-    Serial.print("ERR");
-  } else {
-    Serial.print(humidity, 1);
-    Serial.print("%");
-  }
-
+  Serial.print(isnan(humidity) ? -1.0 : humidity, 1);
   Serial.print(" | TEMP_C=");
-  if (isnan(temperature)) {
-    Serial.print("ERR");
-  } else {
-    Serial.print(temperature, 1);
-    Serial.print("C");
-  }
-
-  Serial.print(" | MIC_RAW=");
-  Serial.print(micRaw);
-
-  Serial.print(" | MIC_MIN=");
-  Serial.print(micMin);
-
-  Serial.print(" | MIC_MAX=");
-  Serial.print(micMax);
-
+  Serial.print(isnan(temperature) ? -1.0 : temperature, 1);
   Serial.print(" | MIC_P2P=");
   Serial.println(micP2P);
 
-  delay(1000);
+  // Reduce delay slightly so the ESP32 is more responsive to the buzzer command
+  delay(500); 
 }

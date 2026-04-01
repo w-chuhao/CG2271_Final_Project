@@ -1,23 +1,7 @@
-/*
- * slcd.c — On-board SLCD driver for FRDM-MCXC444
- *
- * Hardware: Lumex LCD-S401M16KR, 4-digit 7-segment, 4-COM multiplexed.
- * Controller: MCXC444 on-chip LCD module (same register set as KL46/K32L2B).
- *
- * All register-level details sourced from:
- *   - NXP AN12579 "Using SLCD Controller on K32L2B3 MCU"
- *   - FRDM-MCXC444 User Manual UM12120 Table 13
- *   - MCX C44X Sub-Family Reference Manual
- */
-
 #include "slcd.h"
 #include "MCXC444.h"
 #include <string.h>
 
-/* ================================================================== */
-/* Pin definitions — SLCD peripheral pin numbers (not GPIO bit numbers) */
-/* These are the Pxx indices used to index LCD->WF8B[]                 */
-/* ================================================================== */
 
 /* Back-plane (COM) pins */
 #define LCD_COM0_PIN   59U   /* PTE20 */

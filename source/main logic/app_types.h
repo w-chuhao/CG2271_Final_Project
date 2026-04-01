@@ -8,6 +8,9 @@
 #include "semphr.h"
 
 #define MIC_P2P_THRESHOLD   9
+#define LIGHT_DARK_THRESHOLD 500
+#define TEMP_HIGH_THRESHOLD   30.0f
+#define DIST_CLOSE_THRESHOLD  40.0f
 
 
 typedef struct {
@@ -17,6 +20,18 @@ typedef struct {
     uint16_t micMax;
     uint16_t micP2P;
     uint8_t  p2pFlag;
+    uint8_t  darkFlag;
+
+    // Remote ESP32 Sensors
+	float    temperature;
+	float    distance;
+
+	// Trigger Flags
+//	uint8_t  p2pFlag;
+//	uint8_t  darkFlag;
+	uint8_t  tempFlag;
+	uint8_t  closeFlag;
+
 } SensorPacket;
 
 // FreeRTOS objects defined in main
