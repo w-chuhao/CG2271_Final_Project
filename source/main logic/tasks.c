@@ -168,7 +168,7 @@ void printTask(void *p) {
     PRINTF("SW3 (PTA4) : Acknowledge alert\r\n");
     PRINTF("Light      : PTB0 (ADC0_SE8)\r\n");
     PRINTF("Mic        : PTB1 (ADC0_SE9)\r\n");
-    PRINTF("ESP link   : UART2 on PTE22/PTE23 @ 9600\r\n");
+    PRINTF("ESP link   : UART2 on PTE22/PTE23 @ 115200\r\n");
     PRINTF("Frame      : $MCXC,<light>,<mic_p2p>,<started>,<alert>\\r\\n\r\n");
 
     while (1) {

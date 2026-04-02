@@ -3,4 +3,4 @@
 #include "config.h"
 
 void uartReceiveInit();
-void uartReceiveLoop(DeskState &state);
+void uartReceiveLoop();

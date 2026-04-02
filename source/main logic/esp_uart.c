@@ -5,7 +5,7 @@
 #include "MCXC444.h"
 #include "fsl_clock.h"
 
-#define ESP_UART_BAUD_RATE 9600
+#define ESP_UART_BAUD_RATE 115200
 #define ESP_UART_TX_PIN    22  /* PTE22 -> UART2_TX */
 #define ESP_UART_RX_PIN    23  /* PTE23 -> UART2_RX */
 #define ESP_UART_PIN_MUX   4   /* ALT4 routes PTE22/PTE23 to UART2 */

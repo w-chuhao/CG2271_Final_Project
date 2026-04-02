@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <stdio.h>
-#include <string.h>
 
 #include "uart_receive.h"
 
@@ -10,11 +9,18 @@ constexpr size_t kFrameBufferSize = 64;
 char g_frameBuffer[kFrameBufferSize];
 size_t g_frameIndex = 0;
 
-void resetFrame() {
-  g_frameIndex = 0;
+void printParsedFrame(unsigned int light, unsigned int micP2P, unsigned int started, unsigned int alert) {
+  Serial.print("MCXC LIGHT=");
+  Serial.print(light);
+  Serial.print(" | MCXC MIC_P2P=");
+  Serial.print(micP2P);
+  Serial.print(" | STARTED=");
+  Serial.print(started);
+  Serial.print(" | ALERT=");
+  Serial.println(alert);
 }
 
-void handleFrame(const char *frame, DeskState &state) {
+void handleFrame(const char *frame) {
   unsigned int light = 0;
   unsigned int micP2P = 0;
   unsigned int started = 0;
@@ -22,21 +28,22 @@ void handleFrame(const char *frame, DeskState &state) {
 
   const int parsed = sscanf(frame, "$MCXC,%u,%u,%u,%u", &light, &micP2P, &started, &alert);
   if (parsed == 4) {
-    state.light = static_cast<uint16_t>(light);
-    state.mcxcMicP2P = static_cast<uint16_t>(micP2P);
-    state.systemActive = (started != 0U);
-    state.noise = (alert != 0U);
+    printParsedFrame(light, micP2P, started, alert);
+    return;
   }
+
+  Serial.print("INVALID FRAME: ");
+  Serial.println(frame);
 }
 
 }  // namespace
 
 void uartReceiveInit() {
-  Serial1.begin(9600, SERIAL_8N1, RX1_PIN, TX1_PIN);
-  resetFrame();
+  Serial1.begin(115200, SERIAL_8N1, RX1_PIN, TX1_PIN);
+  Serial.println("UART receive monitor ready");
 }
 
-void uartReceiveLoop(DeskState &state) {
+void uartReceiveLoop() {
   while (Serial1.available() > 0) {
     const char incoming = static_cast<char>(Serial1.read());
 
@@ -44,29 +51,22 @@ void uartReceiveLoop(DeskState &state) {
       continue;
     }
 
-    if (incoming == '$') {
-      resetFrame();
-      g_frameBuffer[g_frameIndex++] = incoming;
-      continue;
-    }
-
-    if (g_frameIndex == 0) {
-      continue;
-    }
-
     if (incoming == '\n') {
-      g_frameBuffer[g_frameIndex] = '\0';
-      if (strncmp(g_frameBuffer, "$MCXC,", 6) == 0) {
-        handleFrame(g_frameBuffer, state);
+      if (g_frameIndex > 0) {
+        g_frameBuffer[g_frameIndex] = '\0';
+        handleFrame(g_frameBuffer);
+        g_frameIndex = 0;
       }
-      resetFrame();
       continue;
     }
 
     if (g_frameIndex < (kFrameBufferSize - 1U)) {
       g_frameBuffer[g_frameIndex++] = incoming;
     } else {
-      resetFrame();
+      g_frameBuffer[g_frameIndex] = '\0';
+      Serial.print("FRAME TOO LONG: ");
+      Serial.println(g_frameBuffer);
+      g_frameIndex = 0;
     }
   }
 }

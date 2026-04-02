@@ -45,7 +45,6 @@ struct DeskState {
   float    humidity;
   float    distance;
   uint16_t light;
-  uint16_t mcxcMicP2P;
   bool     noise;
   bool     systemActive;
   uint8_t  rgbState;
