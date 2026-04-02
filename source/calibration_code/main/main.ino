@@ -8,7 +8,7 @@
 DeskState myDesk = {0.0f, 0.0f, 0.0f, 0, false, true, OFF, 0};
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
   
   // Initialize all our modules
   commsInit();

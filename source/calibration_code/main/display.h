@@ -1,5 +1,6 @@
 #pragma once
 #include "config.h"
+#include <Wire.h>
 
 // Initialise the I2C LCD (call once in setup())
 void displayInit();

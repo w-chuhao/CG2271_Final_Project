@@ -8,8 +8,8 @@
 #define DHTTYPE     DHT11
 #define TRIG_PIN    5
 #define ECHO_PIN    18
-#define RX1_PIN     17   // Connect to MCXC TX
-#define TX1_PIN     16   // Connect to MCXC RX
+#define RX1_PIN     1   // Connect to MCXC TX
+#define TX1_PIN     2   // Connect to MCXC RX
 
 // ── Serial Protocol ────────────────────────────────────────────────
 #define SYNC_BYTE      0xAA
