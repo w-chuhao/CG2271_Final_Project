@@ -1,4 +1,5 @@
 #include "firebase_client.h"
+#include "wifi_manager.h"
 #include "config.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
