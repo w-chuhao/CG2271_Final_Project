@@ -2,8 +2,8 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-#define SW2_START_PIN   3    /* PTC3 */
-#define SW3_ACK_PIN     4    /* PTA4 */
+#define SW2_START_PIN   3U    /* PTC3 */
+#define SW3_ACK_PIN     4U    /* PTA4 */
 #define DEBOUNCE_MS     200
 
 extern SemaphoreHandle_t  g_buttonSema;
@@ -46,6 +46,16 @@ void Buttons_Init(SemaphoreHandle_t sema) {
     NVIC_SetPriority(PORTA_IRQn, 3);
     NVIC_ClearPendingIRQ(PORTA_IRQn);
     NVIC_EnableIRQ(PORTA_IRQn);
+}
+
+bool Buttons_IsSw2Pressed(void)
+{
+    return (GPIOC->PDIR & (1U << SW2_START_PIN)) == 0U;
+}
+
+bool Buttons_IsSw3Pressed(void)
+{
+    return (GPIOA->PDIR & (1U << SW3_ACK_PIN)) == 0U;
 }
 
 // SW2 on PTC3 — START/STOP

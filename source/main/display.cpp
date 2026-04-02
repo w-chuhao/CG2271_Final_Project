@@ -1,14 +1,11 @@
 #include "display.h"
 #include <LiquidCrystal_I2C.h>
 
-#define I2C_SDA_PIN 10 
-#define I2C_SCL_PIN 11
-
+// 0x27 is the most common I2C address; try 0x3F if the display is blank.
 static LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // ── Init ──────────────────────────────────────────────────────────
 void displayInit() {
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   lcd.init();
   lcd.backlight();
   lcd.setCursor(0, 0);

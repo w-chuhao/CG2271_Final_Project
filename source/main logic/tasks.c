@@ -3,9 +3,9 @@
 #include "adc.h"
 #include "led.h"
 #include "buttons.h"
+#include "esp_uart.h"
 #include "slcd.h"
 #include "fsl_debug_console.h"
-#include "fsl_lpuart.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -16,7 +16,7 @@
 #include <stdbool.h>
 
 /* ================================================================== */
-/* sensorTask — reads ADC, pushes SensorPacket onto queue (300 ms)     */
+/* sensorTask — reads ADC, sends telemetry, pushes SensorPacket        */
 /* ================================================================== */
 void sensorTask(void *p) {
     (void)p;
@@ -25,21 +25,29 @@ void sensorTask(void *p) {
     memset(&pkt, 0, sizeof(pkt));
 
     while (1) {
-        bool started = false;
+        bool systemStarted;
+        bool alertLatched;
 
-        if (xSemaphoreTake(g_statusMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-            started = g_systemStarted;
+        pkt.lightRaw = ADC_ReadChannel(PHOTO_ADC_CH);
+        ADC_ReadMicWindow(&pkt.micRaw, &pkt.micMin, &pkt.micMax, &pkt.micP2P);
+        pkt.p2pFlag  = (pkt.micP2P > MIC_P2P_THRESHOLD) ? 1U : 0U;
+        pkt.darkFlag = (pkt.lightRaw < LIGHT_DARK_THRESHOLD) ? 1U : 0U;
+
+        if (xSemaphoreTake(g_statusMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            systemStarted = g_systemStarted;
+            alertLatched  = g_alertLatched;
             xSemaphoreGive(g_statusMutex);
+        } else {
+            systemStarted = false;
+            alertLatched  = false;
         }
 
-        if (started) {
-            pkt.lightRaw = ADC_ReadChannel(PHOTO_ADC_CH);
-            ADC_ReadMicWindow(&pkt.micRaw, &pkt.micMin, &pkt.micMax, &pkt.micP2P);
-            pkt.p2pFlag  = (pkt.micP2P > MIC_P2P_THRESHOLD) ? 1U : 0U;
-            pkt.darkFlag = (pkt.lightRaw < LIGHT_DARK_THRESHOLD) ? 1U : 0U;
-            xQueueOverwrite(g_sensorQueue, &pkt);
-        }
+        ESP_UART_SendTelemetry(pkt.lightRaw,
+                               pkt.micP2P,
+                               systemStarted,
+                               alertLatched);
 
+        xQueueOverwrite(g_sensorQueue, &pkt);
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(300));
     }
 }
@@ -49,7 +57,6 @@ void sensorTask(void *p) {
 /* ================================================================== */
 void buttonTask(void *p) {
     (void)p;
-    Buttons_Init(g_buttonSema);
 
     while (1) {
         if (xSemaphoreTake(g_buttonSema, portMAX_DELAY) == pdTRUE) {
@@ -86,18 +93,11 @@ void buttonTask(void *p) {
 
 /* ==================================================================  */
 /* alertTask — drives RGB LED and SLCD based on system state           */
-/*                                                                     */
-/* SLCD display layout (4 digits):                                     */
-/*   System OFF  : "    " (blank)                                      */
-/*   Running, OK : light ADC value  e.g. "2048"                        */
-/*   Alert       : mic P2P value    e.g. "  42" (leading zeros hidden) */
-/*                 alternating every 1 second with "AL  "              */
 /* ==================================================================  */
-
 void alertTask(void *p) {
     (void)p;
     SensorPacket pkt;
-    bool showingAlert = false;       /* used to alternate SLCD content on alert */
+    bool showingAlert = false;
     TickType_t lastAlternate = 0;
 
     while (1) {
@@ -110,34 +110,20 @@ void alertTask(void *p) {
             }
 
             if (!g_systemStarted) {
-                /* System off: everything blank and buzzer off */
                 g_alertLatched = false;
                 LED_OffAll();
                 SLCD_Clear();
-                LPUART_WriteByte(LPUART0, 'O'); /* Ensure ESP32 buzzer is off */
             } else {
-
-                // 1. Group the environmental hazards (OR logic)
-                // (Assuming these flags are being set in your sensorTask & UART task)
                 bool badEnvironment = (pkt.p2pFlag || pkt.darkFlag || pkt.tempFlag);
-
-                // 2. Check the proximity (AND logic)
                 bool personTooClose = pkt.closeFlag;
 
-                // 3. The Final Trigger:
                 if (gotPacket && badEnvironment && personTooClose) {
-                    if (!g_alertLatched) {
-                        g_alertLatched = true;
-                        // Tell the ESP32 to turn ON the buzzer
-                        LPUART_WriteByte(LPUART0, 'A');
-                    }
+                    g_alertLatched = true;
                 }
 
                 if (g_alertLatched) {
-                    /* Red LED */
                     LED_SetRGB(true, false, false);
 
-                    /* Alternate SLCD between "AL  " and the trigger cause */
                     TickType_t now = xTaskGetTickCount();
                     if ((now - lastAlternate) >= pdMS_TO_TICKS(1000)) {
                         lastAlternate  = now;
@@ -147,23 +133,17 @@ void alertTask(void *p) {
                     if (showingAlert) {
                         SLCD_ShowString("AL  ");
                     } else {
-                        // Display what caused the bad environment
                         if (g_latestPacket.p2pFlag) {
-                            SLCD_ShowNumber(g_latestPacket.micP2P);       // Show loud sound
+                            SLCD_ShowNumber(g_latestPacket.micP2P);
                         } else if (g_latestPacket.tempFlag) {
-                            SLCD_ShowNumber((uint16_t)g_latestPacket.temperature); // Show high temp
+                            SLCD_ShowNumber((uint16_t)g_latestPacket.temperature);
                         } else {
-                            SLCD_ShowNumber(g_latestPacket.lightRaw);     // Show low light
+                            SLCD_ShowNumber(g_latestPacket.lightRaw);
                         }
                     }
                 } else {
-                    /* Green LED, System Normal */
                     LED_SetRGB(false, true, false);
                     showingAlert  = false;
-
-                    // If the alarm was just acknowledged (cleared by SW3), tell ESP32 to turn OFF the buzzer
-                    LPUART_WriteByte(LPUART0, 'O');
-
                     SLCD_ShowNumber(g_latestPacket.lightRaw);
                 }
             }
@@ -174,7 +154,7 @@ void alertTask(void *p) {
 }
 
 /* ================================================================== */
-/* printTask — UART log every 1 s                                       */
+/* printTask — UART log every 1 s                                     */
 /* ================================================================== */
 void printTask(void *p) {
     (void)p;
@@ -188,8 +168,8 @@ void printTask(void *p) {
     PRINTF("SW3 (PTA4) : Acknowledge alert\r\n");
     PRINTF("Light      : PTB0 (ADC0_SE8)\r\n");
     PRINTF("Mic        : PTB1 (ADC0_SE9)\r\n");
-    PRINTF("SLCD       : on-board DS1 (4-digit 7-seg)\r\n");
-    PRINTF("P2P thresh : >%u\r\n\r\n", MIC_P2P_THRESHOLD);
+    PRINTF("ESP link   : UART2 on PTE22/PTE23 @ 9600\r\n");
+    PRINTF("Frame      : $MCXC,<light>,<mic_p2p>,<started>,<alert>\\r\\n\r\n");
 
     while (1) {
         if (xSemaphoreTake(g_statusMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -203,16 +183,11 @@ void printTask(void *p) {
             memset(&pkt, 0, sizeof(pkt));
         }
 
-        PRINTF("STARTED=%u | ALERT=%u | LIGHT=%u | MIC_P2P=%u"
-               " | MIC_MIN=%u | MIC_MAX=%u | RAW=%u | FLAG=%u\r\n",
+        PRINTF("STARTED=%u | ALERT=%u | LIGHT=%u | MIC_P2P=%u\r\n",
                started ? 1U : 0U,
                alert   ? 1U : 0U,
                pkt.lightRaw,
-               pkt.micP2P,
-               pkt.micMin,
-               pkt.micMax,
-               pkt.micRaw,
-               pkt.p2pFlag);
+               pkt.micP2P);
 
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1000));
     }

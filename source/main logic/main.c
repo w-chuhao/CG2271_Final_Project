@@ -17,6 +17,8 @@
 #include "semphr.h"
 
 #include "app_types.h"
+#include "buttons.h"
+#include "esp_uart.h"
 #include "led.h"
 #include "adc.h"
 #include "slcd.h"
@@ -52,6 +54,7 @@ int main(void) {
     LED_OffAll();
     ADC_Init();
     SLCD_Init();      /* initialise the on-board 4-digit LCD */
+    ESP_UART_Init();
 
     g_sensorQueue = xQueueCreate(1, sizeof(SensorPacket));
     g_buttonSema  = xSemaphoreCreateBinary();
@@ -61,6 +64,8 @@ int main(void) {
         PRINTF("ERROR: RTOS object creation failed\r\n");
         while (1) { __asm volatile ("nop"); }
     }
+
+    Buttons_Init(g_buttonSema);
 
     xTaskCreate(sensorTask, "sensor", configMINIMAL_STACK_SIZE + 250, NULL, 2, NULL);
     xTaskCreate(buttonTask, "button", configMINIMAL_STACK_SIZE + 200, NULL, 3, NULL);
