@@ -6,7 +6,7 @@
  * Generated linker script file for MCXC444
  * Created from memory.ldt by FMCreateLinkMemory
  * Using Freemarker v2.3.30
- * MCUXpresso IDE v25.6 [Build 136] [2025-06-27] on 1 Apr 2026, 5:29:28 pm
+ * MCUXpresso IDE v25.6 [Build 136] [2025-06-27] on 5 Apr 2026, 10:11:18 pm
  */
 
 MEMORY
