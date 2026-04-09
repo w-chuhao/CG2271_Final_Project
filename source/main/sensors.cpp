@@ -3,8 +3,11 @@
 #include <DHT.h>
 
 static DHT dht(DHTPIN, DHTTYPE);
+static float cachedTemp = NAN;
+static float cachedHumidity = NAN;
+static uint32_t lastDhtReadMs = 0;
 
-// ── Init ──────────────────────────────────────────────────────────
+// Init
 void sensorsInit() {
   dht.begin();
   pinMode(TRIG_PIN, OUTPUT);
@@ -12,7 +15,7 @@ void sensorsInit() {
   pinMode(BUZZER_PIN, OUTPUT);
 }
 
-// ── Private: Ultrasonic ───────────────────────────────────────────
+// Private: Ultrasonic
 static float readUltrasonic() {
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
@@ -25,14 +28,29 @@ static float readUltrasonic() {
   return duration * 0.0343f / 2.0f;
 }
 
-// ── Public: Read all local sensors ────────────────────────────────
+// Public: Read all local sensors
 void sensorsRead(DeskState &state) {
-  state.temp     = dht.readTemperature();
-  state.humidity = dht.readHumidity();
+  const uint32_t now = millis();
+  if ((lastDhtReadMs == 0U) || (now - lastDhtReadMs >= 2000U)) {
+    const float newTemp = dht.readTemperature();
+    const float newHumidity = dht.readHumidity();
+
+    if (!isnan(newTemp)) {
+      cachedTemp = newTemp;
+    }
+    if (!isnan(newHumidity)) {
+      cachedHumidity = newHumidity;
+    }
+
+    lastDhtReadMs = now;
+  }
+
+  state.temp = cachedTemp;
+  state.humidity = cachedHumidity;
   state.distance = readUltrasonic();
 }
 
-// ── Public: Evaluate desk state ───────────────────────────────────
+// Public: Evaluate desk state
 uint8_t evaluateState(const DeskState &state) {
   if (state.temp     > TEMP_HI
       || state.distance < DIST_LOW
@@ -50,7 +68,7 @@ uint8_t evaluateState(const DeskState &state) {
   return WARNING;
 }
 
-// ── Debug Helpers ─────────────────────────────────────────────────
+// Debug Helpers
 void printDistance(float distance) {
   Serial.print("DIST_CM=");
   if (distance < 0) Serial.print("ERR");

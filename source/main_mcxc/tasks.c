@@ -3,9 +3,8 @@
 #include "adc.h"
 #include "led.h"
 #include "buttons.h"
-#include "slcd.h"
+#include "ssd1306.h"
 #include "fsl_debug_console.h"
-#include "fsl_lpuart.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -16,7 +15,7 @@
 #include <stdbool.h>
 
 /* ================================================================== */
-/* sensorTask — reads ADC, pushes SensorPacket onto queue (300 ms)     */
+/* sensorTask — reads ADC every 300 ms, pushes to queue                */
 /* ================================================================== */
 void sensorTask(void *p) {
     (void)p;
@@ -26,7 +25,6 @@ void sensorTask(void *p) {
 
     while (1) {
         bool started = false;
-
         if (xSemaphoreTake(g_statusMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
             started = g_systemStarted;
             xSemaphoreGive(g_statusMutex);
@@ -36,7 +34,6 @@ void sensorTask(void *p) {
             pkt.lightRaw = ADC_ReadChannel(PHOTO_ADC_CH);
             ADC_ReadMicWindow(&pkt.micRaw, &pkt.micMin, &pkt.micMax, &pkt.micP2P);
             pkt.p2pFlag  = (pkt.micP2P > MIC_P2P_THRESHOLD) ? 1U : 0U;
-            pkt.darkFlag = (pkt.lightRaw < LIGHT_DARK_THRESHOLD) ? 1U : 0U;
             xQueueOverwrite(g_sensorQueue, &pkt);
         }
 
@@ -45,7 +42,7 @@ void sensorTask(void *p) {
 }
 
 /* ================================================================== */
-/* buttonTask — waits on semaphore, handles SW2/SW3 logic              */
+/* buttonTask — handles SW2 (start/stop) and SW3 (ack alert)          */
 /* ================================================================== */
 void buttonTask(void *p) {
     (void)p;
@@ -84,88 +81,49 @@ void buttonTask(void *p) {
     }
 }
 
-/* ==================================================================  */
-/* alertTask — drives RGB LED and SLCD based on system state           */
-/*                                                                     */
-/* SLCD display layout (4 digits):                                     */
-/*   System OFF  : "    " (blank)                                      */
-/*   Running, OK : light ADC value  e.g. "2048"                        */
-/*   Alert       : mic P2P value    e.g. "  42" (leading zeros hidden) */
-/*                 alternating every 1 second with "AL  "              */
-/* ==================================================================  */
-
+/* ================================================================== */
+/* alertTask — drives RGB LED and SSD1306 display                      */
+/*                                                                      */
+/* The display update is rate-limited to once per 500 ms to avoid      */
+/* hammering the I2C bus on every queue receive timeout.               */
+/* ================================================================== */
 void alertTask(void *p) {
     (void)p;
     SensorPacket pkt;
-    bool showingAlert = false;       /* used to alternate SLCD content on alert */
-    TickType_t lastAlternate = 0;
+    TickType_t lastDisplayUpdate = 0;
 
     while (1) {
-        bool gotPacket = (xQueueReceive(g_sensorQueue, &pkt, pdMS_TO_TICKS(200)) == pdTRUE);
+        bool gotPacket = (xQueueReceive(g_sensorQueue, &pkt,
+                                        pdMS_TO_TICKS(200)) == pdTRUE);
 
         if (xSemaphoreTake(g_statusMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
 
             if (gotPacket) {
                 g_latestPacket = pkt;
+                if (pkt.p2pFlag) {
+                    g_alertLatched = true;
+                }
             }
 
+            /* Update RGB LED immediately */
             if (!g_systemStarted) {
-                /* System off: everything blank and buzzer off */
                 g_alertLatched = false;
                 LED_OffAll();
-                SLCD_Clear();
-                LPUART_WriteByte(LPUART0, 'O'); /* Ensure ESP32 buzzer is off */
+            } else if (g_alertLatched) {
+                LED_SetRGB(true, false, false);   /* RED   */
             } else {
+                LED_SetRGB(false, true, false);   /* GREEN */
+            }
 
-                // 1. Group the environmental hazards (OR logic)
-                // (Assuming these flags are being set in your sensorTask & UART task)
-                bool badEnvironment = (pkt.p2pFlag || pkt.darkFlag || pkt.tempFlag);
-
-                // 2. Check the proximity (AND logic)
-                bool personTooClose = pkt.closeFlag;
-
-                // 3. The Final Trigger:
-                if (gotPacket && badEnvironment && personTooClose) {
-                    if (!g_alertLatched) {
-                        g_alertLatched = true;
-                        // Tell the ESP32 to turn ON the buzzer
-                        LPUART_WriteByte(LPUART0, 'A');
-                    }
-                }
-
-                if (g_alertLatched) {
-                    /* Red LED */
-                    LED_SetRGB(true, false, false);
-
-                    /* Alternate SLCD between "AL  " and the trigger cause */
-                    TickType_t now = xTaskGetTickCount();
-                    if ((now - lastAlternate) >= pdMS_TO_TICKS(1000)) {
-                        lastAlternate  = now;
-                        showingAlert   = !showingAlert;
-                    }
-
-                    if (showingAlert) {
-                        SLCD_ShowString("AL  ");
-                    } else {
-                        // Display what caused the bad environment
-                        if (g_latestPacket.p2pFlag) {
-                            SLCD_ShowNumber(g_latestPacket.micP2P);       // Show loud sound
-                        } else if (g_latestPacket.tempFlag) {
-                            SLCD_ShowNumber((uint16_t)g_latestPacket.temperature); // Show high temp
-                        } else {
-                            SLCD_ShowNumber(g_latestPacket.lightRaw);     // Show low light
-                        }
-                    }
-                } else {
-                    /* Green LED, System Normal */
-                    LED_SetRGB(false, true, false);
-                    showingAlert  = false;
-
-                    // If the alarm was just acknowledged (cleared by SW3), tell ESP32 to turn OFF the buzzer
-                    LPUART_WriteByte(LPUART0, 'O');
-
-                    SLCD_ShowNumber(g_latestPacket.lightRaw);
-                }
+            /* Update SSD1306 at most every 500 ms — I2C is slow (1024
+             * bytes at 100 kHz takes ~90 ms) so don't call on every loop */
+            TickType_t now = xTaskGetTickCount();
+            if ((now - lastDisplayUpdate) >= pdMS_TO_TICKS(500)) {
+                lastDisplayUpdate = now;
+                SSD1306_ShowAll(g_systemStarted,
+                                g_alertLatched,
+                                g_latestPacket.lightRaw,
+                                g_latestPacket.micP2P);
             }
 
             xSemaphoreGive(g_statusMutex);
@@ -188,7 +146,7 @@ void printTask(void *p) {
     PRINTF("SW3 (PTA4) : Acknowledge alert\r\n");
     PRINTF("Light      : PTB0 (ADC0_SE8)\r\n");
     PRINTF("Mic        : PTB1 (ADC0_SE9)\r\n");
-    PRINTF("SLCD       : on-board DS1 (4-digit 7-seg)\r\n");
+    PRINTF("SSD1306    : I2C1  PTC1=SCL  PTC2=SDA  addr=0x3C\r\n");
     PRINTF("P2P thresh : >%u\r\n\r\n", MIC_P2P_THRESHOLD);
 
     while (1) {
