@@ -6,6 +6,7 @@
 #include "firebase_client.h"
 #include "telegram_bot.h"
 #include "gemini_client.h"
+#include "time_util.h"
 #include "secrets.h"
 
 DeskState espDesk = {NAN, NAN, -1.0f, 0, 0, false, 0, WARNING_STATE_IDLE, false};
@@ -104,11 +105,17 @@ static void runCloudLoop() {
       (espDesk.warningState >= WARNING_STATE_RED) &&
       (lastWarningState      <  WARNING_STATE_RED);
 
-    if (escalated && !espDesk.warningSuppressed) {
-      sendTelegramAlert(espDesk);
-      // AI advice on critical events (rate-limited inside askGemini)
-      String tip = askGeminiForAdvice(espDesk);
-      if (tip.length() > 0) sendTelegramMessage("🤖 " + tip);
+    if (escalated) {
+      // Force an immediate Firebase write so the RED sample is never missed
+      // by the periodic cadence — reset the cadence clock afterwards.
+      if (logToFirebase(espDesk)) lastFirebaseMs = millis();
+
+      if (!espDesk.warningSuppressed) {
+        sendTelegramAlert(espDesk);
+        // AI advice on critical events (rate-limited inside askGemini)
+        String tip = askGeminiForAdvice(espDesk);
+        if (tip.length() > 0) sendTelegramMessage("🤖 " + tip);
+      }
     }
     lastWarningState = espDesk.warningState;
   }
@@ -123,6 +130,7 @@ void setup() {
   applyBuzzer(false);
 
   wifiInit();
+  timeInit();
   initFirebase();
   initTelegram();
   initGemini();
