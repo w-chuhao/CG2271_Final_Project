@@ -9,6 +9,7 @@
 #include "firebase_client.h"
 #include "telegram_bot.h"
 #include "gemini_client.h"
+#include "time_util.h"
 #include "secrets.h"
 
 DeskState espDesk = {NAN, NAN, -1.0f, 0, 0, false, 0, WARNING_STATE_IDLE, false};
@@ -94,22 +95,30 @@ static void handleTelegramCommand(const TgResult &r, const DeskState &snapshot) 
 static void cloudTask(void *param) {
   (void)param;
 
-  uint32_t lastFirebaseMs = 0;
-  uint32_t lastTelegramMs = 0;
-  uint8_t lastWarningState = WARNING_STATE_IDLE;
+  uint32_t lastFirebaseMs   = 0;
+  uint32_t lastTelegramMs   = 0;
+  uint32_t lastRedAlertMs   = 0;   // for periodic re-alerts while RED
+  uint32_t lastRedGeminiMs  = 0;   // for periodic re-advice while RED
+  uint8_t  lastWarningState = WARNING_STATE_IDLE;
 
   for (;;) {
     wifiEnsureUp();
+    timeMaintain();
 
     if (wifiIsConnected()) {
       const uint32_t now = millis();
       const DeskState snapshot = readDeskStateSnapshot();
+      const bool inRed =
+        (snapshot.warningState >= WARNING_STATE_RED) &&
+        !snapshot.warningSuppressed;
 
+      // ---- 1. Periodic Firebase stream ----
       if (now - lastFirebaseMs >= FIREBASE_LOG_INTERVAL_MS) {
         lastFirebaseMs = now;
         logToFirebase(snapshot);
       }
 
+      // ---- 2. Telegram command poll ----
       if (now - lastTelegramMs >= TELEGRAM_POLL_INTERVAL_MS) {
         lastTelegramMs = now;
         TgResult r = pollTelegram();
@@ -118,21 +127,43 @@ static void cloudTask(void *param) {
         }
       }
 
+      // ---- 3. RED edge detection (transition into RED) ----
       if (snapshot.warningState != lastWarningState) {
         const bool escalated =
           (snapshot.warningState >= WARNING_STATE_RED) &&
           (lastWarningState < WARNING_STATE_RED);
 
-        if (escalated && !snapshot.warningSuppressed) {
-          sendTelegramAlert(snapshot);
-          String tip = askGeminiForAdvice(snapshot);
-          if (tip.length() > 0) sendTelegramMessage("🤖 " + tip);
+        if (escalated) {
+          // Force-write the moment of escalation, never wait for the cadence.
+          if (logToFirebase(snapshot)) lastFirebaseMs = now;
+
+          if (!snapshot.warningSuppressed) {
+            sendTelegramAlert(snapshot);
+            lastRedAlertMs = now;
+
+            String tip = askGeminiForAdvice(snapshot);
+            if (tip.length() > 0) sendTelegramMessage("🤖 " + tip);
+            lastRedGeminiMs = now;
+          }
         }
         lastWarningState = snapshot.warningState;
       }
+
+      // ---- 4. While stuck in RED — periodic re-alert + re-advice ----
+      if (inRed) {
+        if (now - lastRedAlertMs >= RED_PERSIST_ALERT_INTERVAL_MS) {
+          lastRedAlertMs = now;
+          sendTelegramAlert(snapshot);
+        }
+        if (now - lastRedGeminiMs >= RED_PERSIST_GEMINI_INTERVAL_MS) {
+          lastRedGeminiMs = now;
+          String tip = askGeminiForAdvice(snapshot);
+          if (tip.length() > 0) sendTelegramMessage("🤖 " + tip);
+        }
+      }
     }
 
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(CLOUD_TASK_TICK_MS));
   }
 }
 
@@ -147,6 +178,7 @@ void setup() {
   applyBuzzer(false);
 
   wifiInit();
+  timeInit();
   initFirebase();
   initTelegram();
   initGemini();
