@@ -7,9 +7,10 @@
 #include "queue.h"
 #include "semphr.h"
 
-#define MIC_P2P_THRESHOLD          9U
-#define LIGHT_DARK_THRESHOLD       100U
-#define LIGHT_BRIGHT_THRESHOLD     210U
+#define SUGGESTION_MAX_LEN         80
+#define MIC_P2P_THRESHOLD          9
+#define LIGHT_DARK_THRESHOLD       100
+#define LIGHT_BRIGHT_THRESHOLD     210
 #define TEMP_HIGH_THRESHOLD_C      32.0f
 #define DIST_CLOSE_THRESHOLD_CM    15.0f
 
@@ -52,5 +53,7 @@ extern bool           g_alertSuppressed;
 extern WarningState   g_warningState;
 extern OledScreenMode g_oledScreenMode;
 extern SensorPacket   g_latestPacket;
+extern char           g_suggestionBuf[SUGGESTION_MAX_LEN];
+extern bool           g_suggestionReady;
 
 #endif

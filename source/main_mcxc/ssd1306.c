@@ -18,6 +18,7 @@
 // I2C baud rate: F_BUS / ((ICR multiplier) * prescaler)
 
 #define I2C_ICR_100KHZ   0x1FU
+#define OLED_CHARS_PER_LINE  21
 
 
 static uint8_t s_frameBuf[SSD1306_HEIGHT / 8U][SSD1306_WIDTH];
@@ -360,8 +361,39 @@ void SSD1306_Clear(void) {
     SSD1306_Flush();
 }
 
+static void fb_drawWrapped(uint8_t startPage, uint8_t maxPages,
+                            const char *str, uint8_t maxCols)
+{
+    char    lineBuf[32];
+    uint8_t page = startPage;
+
+    while (*str != '\0' && page < (startPage + maxPages))
+    {
+        uint8_t n = 0U;
+
+        /* Count up to maxCols characters */
+        while (n < maxCols && str[n] != '\0') { n++; }
+
+        /* If we didn't reach the end, back up to the last space */
+        if (str[n] != '\0' && n == maxCols)
+        {
+            uint8_t k = n;
+            while (k > 0U && str[k] != ' ') { k--; }
+            if (k > 0U) { n = k; }
+        }
+
+        memcpy(lineBuf, str, n);
+        lineBuf[n] = '\0';
+        fb_drawString(0U, page, lineBuf);
+
+        str += n;
+        if (*str == ' ') { str++; }   /* skip the break space */
+        page++;
+    }
+}
+
 /* ================================================================== */
-/* Public: ShowAll                                                      */
+/* Public                                                     */
 /*                                                                      */
 /* Screen layout (each row = 1 page = 8px tall):                       */
 /*                                                                      */
@@ -382,7 +414,10 @@ void SSD1306_ShowAll(bool started,
                      float temperatureC,
                      bool temperatureValid,
                      float distanceCm,
-                     bool distanceValid) {
+                     bool distanceValid,
+                     bool suggestionReady,
+                     const char *suggestionBuf)
+{
     char numBuf[16];
 
     memset(s_frameBuf, 0, sizeof(s_frameBuf));
@@ -394,57 +429,60 @@ void SSD1306_ShowAll(bool started,
         return;
     }
 
-    fb_drawString(0U, 0U, "SYS: ON");
+    fb_drawString(0U,  0U, "SYS: ON");
     fb_drawString(56U, 0U, "ALT:");
-    if (alert) {
-        fb_drawString(86U, 0U, "YES");
-    } else {
-        fb_drawString(86U, 0U, "NO ");
-    }
+    fb_drawString(86U, 0U, alert ? "YES" : "NO ");
 
-    if (showSuggestionScreen) {
+    if (showSuggestionScreen)
+    {
         fb_drawString(0U, 1U, "VIEW: SUGGESTION");
         fb_hLine(19U);
-        fb_drawString(0U, 3U, "CHATGPT SUGGEST:");
-        fb_drawString(0U, 4U, "TO BE IMPLEMENTED");
-        fb_drawString(0U, 6U, "Press SW3 to toggle");
-    } else {
+
+        if (suggestionReady &&
+            suggestionBuf != NULL &&
+            suggestionBuf[0] != '\0')
+        {
+            /* pages 3-7 = 5 lines of 21 chars each */
+            fb_drawWrapped(3U, 5U, suggestionBuf, OLED_CHARS_PER_LINE);
+        }
+        else
+        {
+            fb_drawString(0U, 3U, "Waiting for AI...");
+            fb_drawString(0U, 5U, "Press SW3 to toggle");
+        }
+    }
+    else
+    {
         fb_drawString(0U, 1U, "VIEW: SENSORS");
         fb_hLine(19U);
 
-        fb_drawString(0U, 3U, "LIGHT:");
+        fb_drawString(0U,  3U, "LIGHT:");
         u16ToString(lightAdc, numBuf, sizeof(numBuf));
         fb_drawString(42U, 3U, numBuf);
 
-        fb_drawString(0U, 4U, "SOUND:");
+        fb_drawString(0U,  4U, "SOUND:");
         u16ToString(micP2P, numBuf, sizeof(numBuf));
         fb_drawString(42U, 4U, numBuf);
 
-        fb_drawString(0U, 5U, "CNT:");
+        fb_drawString(0U,  5U, "CNT:");
         u16ToString(activeCount, numBuf, sizeof(numBuf));
         fb_drawString(30U, 5U, numBuf);
 
-        fb_drawString(0U, 6U, "TEMP:");
+        fb_drawString(0U,  6U, "TEMP:");
         if (temperatureValid) {
             const int tempDeci = (int)(temperatureC * 10.0f);
-            (void)snprintf(numBuf,
-                           sizeof(numBuf),
-                           "%d.%dC",
-                           tempDeci / 10,
-                           abs(tempDeci % 10));
+            (void)snprintf(numBuf, sizeof(numBuf), "%d.%dC",
+                           tempDeci / 10, abs(tempDeci % 10));
             fb_drawString(36U, 6U, numBuf);
         } else {
             fb_drawString(36U, 6U, "N/A");
         }
 
-        fb_drawString(0U, 7U, "DIST:");
+        fb_drawString(0U,  7U, "DIST:");
         if (distanceValid) {
             const int distDeci = (int)(distanceCm * 10.0f);
-            (void)snprintf(numBuf,
-                           sizeof(numBuf),
-                           "%d.%dcm",
-                           distDeci / 10,
-                           abs(distDeci % 10));
+            (void)snprintf(numBuf, sizeof(numBuf), "%d.%dcm",
+                           distDeci / 10, abs(distDeci % 10));
             fb_drawString(36U, 7U, numBuf);
         } else {
             fb_drawString(36U, 7U, "N/A");

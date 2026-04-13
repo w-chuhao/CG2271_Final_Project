@@ -20,6 +20,8 @@ void SSD1306_ShowAll(bool started,
                      float temperatureC,
                      bool temperatureValid,
                      float distanceCm,
-                     bool distanceValid);
+                     bool distanceValid,
+                     bool suggestionReady,
+                     const char *suggestionBuf);
 
 #endif
