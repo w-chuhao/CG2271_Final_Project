@@ -83,6 +83,7 @@ static void handleTelegramCommand(const TgResult &r, const DeskState &snapshot) 
       String answer = askGemini(snapshot, r.text);
       if (answer.length() == 0) answer = "(AI unavailable or rate-limited — try again shortly)";
       sendTelegramMessage("🤖 " + answer);
+      uartSendSuggestion(answer);
       break;
     }
 
@@ -132,6 +133,7 @@ static void cloudTask(void *param) {
         const bool escalated =
           (snapshot.warningState >= WARNING_STATE_RED) &&
           (lastWarningState < WARNING_STATE_RED);
+
 
         if (escalated) {
           // Force-write the moment of escalation, never wait for the cadence.
