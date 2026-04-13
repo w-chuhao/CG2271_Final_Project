@@ -8,6 +8,7 @@
 namespace {
 
 constexpr size_t kFrameBufferSize = 80;
+constexpr size_t kSuggestionPayloadMax = 72;
 char g_frameBuffer[kFrameBufferSize];
 size_t g_frameIndex = 0;
 bool g_haveMcxcFrame = false;
@@ -17,31 +18,15 @@ static uint8_t warningStateFromCount(uint8_t activeCount) {
     return WARNING_STATE_IDLE;
   }
   if (activeCount == 1U) {
-    return WARNING_STATE_YELLOW;
+    return WARNING_STATE_GREEN;
   }
   if (activeCount == 2U) {
+    return WARNING_STATE_YELLOW;
+  }
+  if (activeCount == 3U) {
     return WARNING_STATE_RED;
   }
   return WARNING_STATE_RED_BUZZER;
-}
-
-static uint8_t breachedCountFromAllSensors(const DeskState &state) {
-  uint8_t count = 0U;
-
-  if (!isnan(state.temp) && state.temp >= TEMP_HIGH_THRESHOLD_C) {
-    count++;
-  }
-  if (state.distance >= 0.0f && state.distance <= DIST_CLOSE_THRESHOLD_CM) {
-    count++;
-  }
-  if (state.light <= LIGHT_DARK_THRESHOLD) {
-    count++;
-  }
-  if (state.soundP2P >= SOUND_THRESHOLD) {
-    count++;
-  }
-
-  return count;
 }
 
 static void handleFrame(const char *frame, DeskState &state) {
@@ -108,7 +93,7 @@ void uartSendEspSensors(const DeskState &state) {
   uint8_t activeCount = 0U;
 
   if (g_haveMcxcFrame && state.systemActive) {
-    activeCount = breachedCountFromAllSensors(state);
+    activeCount = breachedCount(state);
   }
 
   mutableState.activeCount = activeCount;
@@ -125,4 +110,26 @@ void uartSendEspSensors(const DeskState &state) {
            tempDeci,
            distDeci);
   Serial1.print(frame);
+}
+
+void uartSendSuggestion(const String &suggestion) {
+  if (suggestion.length() == 0) {
+    return;
+  }
+
+  char payload[kSuggestionPayloadMax + 1U];
+  size_t out = 0U;
+  for (size_t i = 0; i < static_cast<size_t>(suggestion.length()) && out < kSuggestionPayloadMax; ++i) {
+    const char c = suggestion[i];
+    if (c == '\r' || c == '\n') {
+      payload[out++] = ' ';
+    } else {
+      payload[out++] = c;
+    }
+  }
+  payload[out] = '\0';
+
+  Serial1.print("$SUG,");
+  Serial1.print(payload);
+  Serial1.print("\r\n");
 }

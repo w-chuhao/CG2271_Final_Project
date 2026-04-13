@@ -1,6 +1,7 @@
 #include "telegram_bot.h"
 #include "secrets.h"
 #include "wifi_manager.h"
+#include "time_util.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -14,8 +15,8 @@ static long lastUpdateId = 0;
 static const char *warningText(uint8_t s) {
   switch (s) {
     case WARNING_STATE_IDLE:         return "Normal";
-    case WARNING_STATE_ACKNOWLEDGED: return "Acknowledged";
-    case WARNING_STATE_YELLOW:       return "Warning";
+    case WARNING_STATE_GREEN:        return "Green";
+    case WARNING_STATE_YELLOW:       return "Yellow";
     case WARNING_STATE_RED:          return "Critical";
     case WARNING_STATE_RED_BUZZER:   return "Critical + Buzzer";
     default:                         return "Unknown";
@@ -30,6 +31,7 @@ void initTelegram() {
 
 String formatStatus(const DeskState &s) {
   String msg = "📊 Desk Status\n";
+  msg += "🕒 " + currentIsoString() + "\n";
 
   msg += "🌡 Temp: ";
   msg += isnan(s.temp) ? String("ERR") : String(s.temp, 1) + " °C";
@@ -73,6 +75,7 @@ bool sendTelegramMessage(const String &text) {
 bool sendTelegramAlert(const DeskState &state) {
   String msg = "🚨 ALERT — ";
   msg += warningText(state.warningState);
+  msg += "\n🕒 " + currentIsoString();
   msg += "\n\n";
   msg += formatStatus(state);
   return sendTelegramMessage(msg);
@@ -123,8 +126,10 @@ TgResult pollTelegram() {
   if (!wifiIsConnected()) return r;
 
   HTTPClient http;
+  // limit=10 drains short backlogs in one poll cycle so /ask doesn't get
+  // stuck behind older /start messages.
   String url = "https://api.telegram.org/bot" + String(TELEGRAM_BOT_TOKEN) +
-               "/getUpdates?timeout=1&limit=1";
+               "/getUpdates?timeout=1&limit=10";
   if (lastUpdateId > 0) {
     url += "&offset=" + String(lastUpdateId + 1);
   }
@@ -132,6 +137,7 @@ TgResult pollTelegram() {
   http.begin(tgClient, url);
   const int code = http.GET();
   if (code != 200) {
+    Serial.printf("[Telegram] getUpdates HTTP error: %d\n", code);
     http.end();
     return r;
   }
@@ -149,18 +155,38 @@ TgResult pollTelegram() {
   JsonArray results = doc["result"].as<JsonArray>();
   if (results.size() == 0) return r;
 
-  JsonObject update = results[0];
-  lastUpdateId = update["update_id"].as<long>();
+  // Walk the batch: always advance offset past every update, but only
+  // act on the most recent message from the authorized chat.
+  for (JsonObject update : results) {
+    const long uid = update["update_id"].as<long>();
+    if (uid > lastUpdateId) lastUpdateId = uid;
 
-  // Filter to authorized chat only
-  const char *chat = update["message"]["chat"]["id"] | "";
-  if (String(chat) != String(TELEGRAM_CHAT_ID)) {
-    Serial.printf("[Telegram] Ignored message from %s\n", chat);
-    return r;
+    // chat.id is a JSON number, not a string — read as int64 and stringify.
+    const int64_t chatId = update["message"]["chat"]["id"].as<int64_t>();
+    const String  chatStr = String((long long)chatId);
+    const char   *text    = update["message"]["text"] | "";
+
+    Serial.printf("[Telegram] update_id=%ld chat=%s text=\"%s\"\n",
+                  uid, chatStr.c_str(), text);
+
+    if (chatStr != String(TELEGRAM_CHAT_ID)) {
+      Serial.printf("[Telegram] Ignored — chat %s != expected %s\n",
+                    chatStr.c_str(), TELEGRAM_CHAT_ID);
+      continue;
+    }
+
+    // Parse + remember; later iterations overwrite, so we end up with
+    // the latest valid command in the batch.
+    String tmpText;
+    float  tmpValue;
+    TgCmd  cmd = parseCommand(String(text), tmpValue, tmpText);
+    if (cmd != CMD_NONE || strlen(text) > 0) {
+      r.received = true;
+      r.command  = cmd;
+      r.value    = tmpValue;
+      r.text     = tmpText;
+    }
   }
 
-  const char *text = update["message"]["text"] | "";
-  r.command = parseCommand(String(text), r.value, r.text);
-  r.received = true;
   return r;
 }

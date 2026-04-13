@@ -18,7 +18,7 @@
 #define SOUND_THRESHOLD         9U
 
 #define WARNING_STATE_IDLE          0U
-#define WARNING_STATE_ACKNOWLEDGED  1U
+#define WARNING_STATE_GREEN         1U
 #define WARNING_STATE_YELLOW        2U
 #define WARNING_STATE_RED           3U
 #define WARNING_STATE_RED_BUZZER    4U
