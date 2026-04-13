@@ -5,16 +5,6 @@
  *   PTC1  ALT2  I2C1_SCL   → Arduino J4 pin 12
  *   PTC2  ALT2  I2C1_SDA   → Arduino J4 pin 10
  *
- * The SSD1306 receives data as a stream of I2C bytes:
- *   [slave addr] [control byte] [data byte(s)]
- *
- * Control byte:
- *   0x00 = next byte(s) are commands
- *   0x40 = next byte(s) are display data (GDDRAM)
- *
- * Frame buffer: 128 * 64 / 8 = 1024 bytes held in RAM.
- * The buffer is flushed to the display with SSD1306_Flush().
- * All drawing functions write to the buffer only — call Flush after.
  */
 
 #include "ssd1306.h"
@@ -24,26 +14,12 @@
 #include <stdlib.h>
 #include <stddef.h>
 
-/* ================================================================== */
-/* I2C configuration                                                    */
-/* ================================================================== */
+// I2C Configuration
+// I2C baud rate: F_BUS / ((ICR multiplier) * prescaler)
 
-/*
- * I2C baud rate: F_BUS / ((ICR multiplier) * prescaler)
- * At 24 MHz bus clock, ICR=0x1F gives ~100 kHz (standard mode).
- * See MCX C44X Reference Manual Table "I2C Divider and Hold Values".
- */
 #define I2C_ICR_100KHZ   0x1FU
 
-/* ================================================================== */
-/* Frame buffer                                                         */
-/* ================================================================== */
 
-/*
- * 1 byte per 8 vertical pixels, across 128 columns.
- * Organised as 8 pages × 128 bytes.
- * Bit 0 of each byte = topmost pixel of that page column.
- */
 static uint8_t s_frameBuf[SSD1306_HEIGHT / 8U][SSD1306_WIDTH];
 
 /* ================================================================== */
@@ -155,26 +131,24 @@ static const uint8_t k_font5x7[][5] = {
 #define FONT_CHAR_GAP   1U   /* 1 pixel gap between characters */
 #define FONT_CHAR_STEP  (FONT_CHAR_W + FONT_CHAR_GAP)
 
-/* ================================================================== */
-/* Low-level I2C helpers                                                */
-/* ================================================================== */
+// I2C Helpers
 
 static void i2c_start(void) {
-    I2C1->C1 |= I2C_C1_MST_MASK;   /* generate START, enter master mode */
-    I2C1->C1 |= I2C_C1_TX_MASK;    /* transmit mode */
+    I2C1->C1 |= I2C_C1_MST_MASK;   // generate START, enter master mode
+    I2C1->C1 |= I2C_C1_TX_MASK;    // transmit mode
 }
 
 static void i2c_stop(void) {
-    I2C1->C1 &= ~I2C_C1_MST_MASK;  /* generate STOP */
+    I2C1->C1 &= ~I2C_C1_MST_MASK;  // generate STOP
     I2C1->C1 &= ~I2C_C1_TX_MASK;
-    /* brief delay to let bus go idle */
+
     for (volatile uint32_t d = 0; d < 50U; d++) { __asm volatile ("nop"); }
 }
 
 static void i2c_waitAck(void) {
-    /* Wait for interrupt flag (byte transfer complete) */
+    // Wait for interrupt flag (byte transfer complete)
     while (!(I2C1->S & I2C_S_IICIF_MASK)) { }
-    I2C1->S |= I2C_S_IICIF_MASK;   /* clear flag (w1c) */
+    I2C1->S |= I2C_S_IICIF_MASK;   // clear flag (w1c)
 }
 
 static void i2c_writeByte(uint8_t data) {
@@ -182,10 +156,10 @@ static void i2c_writeByte(uint8_t data) {
     i2c_waitAck();
 }
 
-/* Send a buffer to the SSD1306 with the given control byte prefix */
+// Send a buffer to the SSD1306 with the given control byte prefix
 static void ssd1306_write(uint8_t ctrl, const uint8_t *buf, uint16_t len) {
     i2c_start();
-    i2c_writeByte((uint8_t)(SSD1306_I2C_ADDR << 1U));  /* address + write bit */
+    i2c_writeByte((uint8_t)(SSD1306_I2C_ADDR << 1U));  // address + write bit
     i2c_writeByte(ctrl);
     for (uint16_t i = 0; i < len; i++) {
         i2c_writeByte(buf[i]);
@@ -202,10 +176,7 @@ static void ssd1306_cmd2(uint8_t cmd, uint8_t arg) {
     ssd1306_write(0x00U, buf, 2U);
 }
 
-/* ================================================================== */
-/* Frame buffer operations                                              */
-/* ================================================================== */
-
+// Frame Buffer Logic
 static void fb_setPixel(uint8_t x, uint8_t y, bool on) {
     if (x >= SSD1306_WIDTH || y >= SSD1306_HEIGHT) return;
     uint8_t page = y / 8U;
@@ -237,7 +208,7 @@ static uint8_t fb_drawChar(uint8_t x, uint8_t page, char c) {
                         (colData & (1U << bit)) != 0U);
         }
     }
-    /* Gap column */
+    // Gap column
     if ((x + FONT_CHAR_W) < SSD1306_WIDTH) {
         for (uint8_t bit = 0U; bit < 8U; bit++) {
             fb_setPixel((uint8_t)(x + FONT_CHAR_W),
@@ -247,7 +218,7 @@ static uint8_t fb_drawChar(uint8_t x, uint8_t page, char c) {
     return (uint8_t)(x + FONT_CHAR_STEP);
 }
 
-/* Draw a string at (x, page). Returns x after last character. */
+// Draw a string at (x, page). Returns x after last character.
 static uint8_t fb_drawString(uint8_t x, uint8_t page, const char *str) {
     while (str != NULL && *str != '\0' && x < SSD1306_WIDTH) {
         x = fb_drawChar(x, page, *str);
@@ -256,8 +227,8 @@ static uint8_t fb_drawString(uint8_t x, uint8_t page, const char *str) {
     return x;
 }
 
-/* Draw a scaled-up character (scale = integer multiplier).
- * Used for big number display. */
+// Draw a scaled-up character (scale = integer multiplier).
+// Used for big number display.
 static uint8_t fb_drawCharBig(uint8_t x, uint8_t startPage,
                                char c, uint8_t scale) {
     if (c < (char)FONT_FIRST_CHAR ||
@@ -298,36 +269,33 @@ static uint8_t fb_drawStringBig(uint8_t x, uint8_t startPage,
     return x;
 }
 
-/* Draw a horizontal line across the full width at pixel row y */
+// Draw a horizontal line across the full width at pixel row y
 static void fb_hLine(uint8_t y) {
     for (uint8_t x = 0U; x < SSD1306_WIDTH; x++) {
         fb_setPixel(x, y, true);
     }
 }
 
-/* Clear a page-row (8 pixel tall band) */
+// Clear a page-row (8 pixel tall band)
 static void fb_clearPage(uint8_t page) {
     memset(s_frameBuf[page], 0, SSD1306_WIDTH);
 }
 
-/* Flush the entire frame buffer to the display */
+// Flush the entire frame buffer to the display
 static void SSD1306_Flush(void) {
-    ssd1306_cmd(0x21U);   /* set column address */
-    ssd1306_cmd(0x00U);   /* start = 0          */
-    ssd1306_cmd(0x7FU);   /* end   = 127        */
-    ssd1306_cmd(0x22U);   /* set page address   */
-    ssd1306_cmd(0x00U);   /* start page = 0     */
-    ssd1306_cmd(0x07U);   /* end page   = 7     */
+    ssd1306_cmd(0x21U);   // set column address
+    ssd1306_cmd(0x00U);   // start = 0
+    ssd1306_cmd(0x7FU);   // end   = 127
+    ssd1306_cmd(0x22U);   // set page address
+    ssd1306_cmd(0x00U);   // start page = 0
+    ssd1306_cmd(0x07U);   // end page   = 7
 
-    /* Send all 1024 bytes as display data */
+    // Send all 1024 bytes as display data
     for (uint8_t page = 0U; page < (SSD1306_HEIGHT / 8U); page++) {
         ssd1306_write(0x40U, s_frameBuf[page], SSD1306_WIDTH);
     }
 }
 
-/* ================================================================== */
-/* Number to string helper (no stdlib snprintf dependency)             */
-/* ================================================================== */
 static void u16ToString(uint16_t val, char *buf, uint8_t bufLen) {
     /* Write digits right-to-left, then reverse */
     uint8_t i = 0;
@@ -346,53 +314,47 @@ static void u16ToString(uint16_t val, char *buf, uint8_t bufLen) {
     buf[i] = '\0';
 }
 
-/* ================================================================== */
-/* Public: Init                                                         */
-/* ================================================================== */
 void SSD1306_Init(void) {
-    /* ---- Clock gates ---- */
+    // Clock Gates
     SIM->SCGC4 |= SIM_SCGC4_I2C1_MASK;
     SIM->SCGC5 |= SIM_SCGC5_PORTC_MASK;
 
-    /* ---- Pin mux: PTC1 = SCL (ALT2), PTC2 = SDA (ALT2)
-     * Open-drain with internal pull-ups enabled                       */
+    // Pin mux: PTC1 = SCL (ALT2), PTC2 = SDA (ALT2)
+    // Open-drain with internal pull-ups enabled
     PORTC->PCR[1] = PORT_PCR_MUX(2) | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK;
     PORTC->PCR[2] = PORT_PCR_MUX(2) | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK;
 
-    /* ---- I2C1 config ----
-     * ICR=0x1F → ~100 kHz at 24 MHz bus clock
-     * MULT=0   → multiplier = 1                                       */
+
+    //ICR=0x1F → ~100 kHz at 24 MHz bus clock
+    // MULT=0   → multiplier = 1
     I2C1->F  = I2C_F_ICR(I2C_ICR_100KHZ) | I2C_F_MULT(0);
     I2C1->C1 = I2C_C1_IICEN_MASK;   /* enable I2C, master mode off until START */
     I2C1->C2 = 0x00U;
     I2C1->S  = I2C_S_IICIF_MASK;    /* clear any stale interrupt flag */
 
-    /* ---- SSD1306 initialisation sequence (128x64) ---- */
-    ssd1306_cmd(0xAEU);              /* display off                    */
-    ssd1306_cmd2(0xD5U, 0x80U);     /* set display clock divide       */
-    ssd1306_cmd2(0xA8U, 0x3FU);     /* set multiplex ratio = 63 (64 rows) */
-    ssd1306_cmd2(0xD3U, 0x00U);     /* set display offset = 0         */
-    ssd1306_cmd(0x40U);             /* set start line = 0             */
-    ssd1306_cmd2(0x8DU, 0x14U);     /* enable charge pump             */
-    ssd1306_cmd2(0x20U, 0x00U);     /* horizontal addressing mode     */
-    ssd1306_cmd(0xA1U);             /* segment remap (col 127 = SEG0) */
-    ssd1306_cmd(0xC8U);             /* COM scan direction: remapped   */
-    ssd1306_cmd2(0xDAU, 0x12U);     /* COM pins config (alt, no remap)*/
-    ssd1306_cmd2(0x81U, 0xCFU);     /* contrast = 207                 */
-    ssd1306_cmd2(0xD9U, 0xF1U);     /* pre-charge period              */
-    ssd1306_cmd2(0xDBU, 0x40U);     /* VCOMH deselect level           */
-    ssd1306_cmd(0xA4U);             /* display from RAM (not all-on)  */
-    ssd1306_cmd(0xA6U);             /* normal display (not inverted)  */
+    // ---- SSD1306 initialisation sequence (128x64) ----
+    ssd1306_cmd(0xAEU);             // display off
+    ssd1306_cmd2(0xD5U, 0x80U);     // set display clock divide
+    ssd1306_cmd2(0xA8U, 0x3FU);     // set multiplex ratio = 63 (64 rows)
+    ssd1306_cmd2(0xD3U, 0x00U);     // set display offset = 0
+    ssd1306_cmd(0x40U);             // set start line = 0
+    ssd1306_cmd2(0x8DU, 0x14U);     // enable charge pump
+    ssd1306_cmd2(0x20U, 0x00U);     // horizontal addressing mode
+    ssd1306_cmd(0xA1U);             // segment remap (col 127 = SEG0)
+    ssd1306_cmd(0xC8U);             // COM scan direction: remapped
+    ssd1306_cmd2(0xDAU, 0x12U);     // COM pins config (alt, no remap)
+    ssd1306_cmd2(0x81U, 0xCFU);     // contrast = 207
+    ssd1306_cmd2(0xD9U, 0xF1U);     // pre-charge period
+    ssd1306_cmd2(0xDBU, 0x40U);     // VCOMH deselect level
+    ssd1306_cmd(0xA4U);             // display from RAM (not all-on)
+    ssd1306_cmd(0xA6U);             // normal display (not inverted)
 
-    /* Clear frame buffer and display */
     SSD1306_Clear();
 
-    ssd1306_cmd(0xAFU);             /* display on                     */
+    ssd1306_cmd(0xAFU);
 }
 
-/* ================================================================== */
-/* Public: Clear                                                        */
-/* ================================================================== */
+
 void SSD1306_Clear(void) {
     memset(s_frameBuf, 0, sizeof(s_frameBuf));
     SSD1306_Flush();
