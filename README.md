@@ -2,7 +2,7 @@
 
 CG2271 Real-Time Operating Systems — AY2025/26 Semester 2 — B01-08
 
-A dual-board IoT system that monitors study desk conditions (temperature, humidity, light, noise, sitting distance) and provides real-time feedback via RGB LED, LCD, buzzer, and Telegram notifications with AI-generated study advisories.
+A dual-board IoT system that monitors study desk conditions (temperature, humidity, light, noise, sitting distance) and provides real-time feedback via RGB LED, LCD, buzzer, and Telegram notifications with Gemini-generated study advisories.
 
 ## Architecture
 
@@ -12,7 +12,7 @@ MCXC444 (FreeRTOS)    ◀──────▶    ESP32    ◀──────
 ──────────────────                ─────                  ─────
 Photoresistor (ADC)               DHT11                  Firebase RTDB
 Big Sound (IRQ)                   HC-SR04                Telegram Bot
-RGB LED                           LCD 16x2               OpenAI API
+RGB LED                           LCD 16x2               Gemini API
 SW2/SW3 (IRQ)                     Buzzer
                                   Wi-Fi
 ```
@@ -21,12 +21,12 @@ SW2/SW3 (IRQ)                     Buzzer
 
 | Component | Board | Interface |
 |---|---|---|
-| DHT11 (temp/humidity) | ESP32 | GPIO |
+| DHT11 (temp/humidity) | ESP32 | GPIO 4 |
 | Photoresistor (light) | MCXC444 | ADC |
 | Big Sound (noise) | MCXC444 | GPIO IRQ |
-| HC-SR04 (distance) | ESP32 | GPIO |
+| HC-SR04 (distance) | ESP32 | TRIG 5 / ECHO 18 |
 | RGB LED | MCXC444 | GPIO |
-| Active Buzzer | ESP32 | GPIO |
+| Active Buzzer | ESP32 | GPIO 9 |
 | LCD QC1602A + PCF8574 | ESP32 | I2C |
 | SW2 (start/stop) | MCXC444 | IRQ |
 | SW3 (alert ack) | MCXC444 | IRQ |
@@ -47,47 +47,77 @@ RTOS primitives: `xSensorQueue` (queue), `xSoundSemaphore` (binary semaphore), `
 
 | Module | File | Function |
 |---|---|---|
-| Wi-Fi | `wifi_manager.cpp` | Connect/reconnect to Wi-Fi |
-| Firebase RTDB | `firebase_client.cpp` | PUT `/latest.json`, POST `/readings.json` |
-| Telegram Bot | `telegram_bot.cpp` | `/status`, `/settemp`, `/setdist`, push alerts |
-| OpenAI API | `openai_client.cpp` | One-sentence study advisory from sensor data |
-| UART | `uart_handler.cpp` | Parse sensor bundle from MCXC444 |
-| LCD | `lcd_display.cpp` | Display readings and advisory text |
+| Wi-Fi | `wifi_manager.cpp` | Connect and auto-reconnect (5 s cooldown) |
+| Firebase RTDB | `firebase_client.cpp` | PUT `/latest.json`, POST `/readings.json` every 1 s |
+| Telegram Bot | `telegram_bot.cpp` | Command handler + push alerts (3 s poll) |
+| Gemini API | `gemini_client.cpp` | Study advisory from sensor context (5 s cooldown) |
+| UART RX | `uart_receive.cpp` | Parse `$MCXC` frames from MCXC444 |
+| Sensors | `sensors.cpp` | DHT11 + HC-SR04 read + threshold evaluation |
+| Display | `display.cpp` | LCD 16x2 output of readings and state |
+| Comms | `comms.cpp` | Shared UART helpers |
 
-OpenAI is called **only** when a Telegram command is received or a warning condition triggers.
+Gemini is called **only** when the user sends `/ask` on Telegram or when the warning state escalates to RED/RED\_BUZZER.
 
-## UART Protocol
+## UART Protocol (9600 baud)
 
-MCXC444 to ESP32:
+MCXC444 → ESP32:
 ```
-TEMP:28.5,HUM:65.0,LIGHT:512,NOISE:1,DIST:45.2,WARN:1\n
+$MCXC,<light>,<sound>,<systemActive>,<warningSuppressed>\r\n
 ```
 
-ESP32 to MCXC444:
+ESP32 → MCXC444:
 ```
-SETTEMP:30.0\n
-SETDIST:40.0\n
-Advisory text here\n
+$ESP,<activeCount>,<temp_x10>,<dist_x10>\r\n
 ```
+
+`temp_x10` and `dist_x10` are integers (temperature and distance multiplied by 10) to avoid float transmission.
 
 ## Warning States
 
-| Level | Condition | Response |
+| Code | Name | Condition | Response |
+|---|---|---|---|
+| 0 | IDLE | All normal | RGB Green |
+| 1 | ACKNOWLEDGED | Alert dismissed via SW3 | RGB Green (alerts suppressed) |
+| 2 | YELLOW | One threshold exceeded | RGB Yellow |
+| 3 | RED | Multiple thresholds exceeded | RGB Red + Telegram alert + Gemini advisory |
+| 4 | RED\_BUZZER | Prolonged RED | RGB Red + Buzzer + Telegram alert + Gemini advisory |
+
+Thresholds (configurable in `config.h`): temp > 25 °C, distance < 15 cm, light < 100 (dark) or > 210 (bright), sound peak-to-peak > 9.
+
+## Telegram Commands
+
+Send these to your bot (only messages from the authorized `TELEGRAM_CHAT_ID` are accepted):
+
+| Command | Example | Action |
 |---|---|---|
-| 0 — Normal | All within thresholds | RGB: Green |
-| 1 — Warning | Any one threshold exceeded | RGB: Yellow |
-| 2 — Critical | Multiple thresholds exceeded | RGB: Red, Buzzer, Telegram alert, OpenAI advisory |
+| `/start` | `/start` | Welcome message + command list |
+| `/status` | `/status` | Current `DeskState` readings |
+| `/ask <question>` | `/ask is my desk too dark?` | Sensor-contextual advice from Gemini |
+| `/settemp <C>` | `/settemp 28` | Echo new temp threshold (MCXC push pending) |
+| `/setdist <cm>` | `/setdist 20` | Echo new distance threshold |
+| `/help` | `/help` | List commands |
+
+Auto-push: on rising edge into RED/RED\_BUZZER (and not suppressed), the bot sends 🚨 alert + 🤖 Gemini advisory.
 
 ## ESP32 Setup
 
-1. Install [Arduino IDE](https://www.arduino.cc/en/software) and add ESP32 board support
-2. Install libraries: `ArduinoJson` (v7+), `LiquidCrystal I2C`
-3. Copy `esp32/config.h.example` to `esp32/config.h` and fill in:
-   - Wi-Fi SSID and password
-   - Firebase RTDB URL and database secret
+1. Install [Arduino IDE](https://www.arduino.cc/en/software) and add ESP32 board support.
+2. Install libraries: `ArduinoJson` (v7+), `DHT sensor library` (Adafruit), `Adafruit Unified Sensor`, `LiquidCrystal I2C`.
+3. Copy `source/main/secrets.h.example` to `source/main/secrets.h` and fill in:
+   - Wi-Fi SSID and password (2.4 GHz network or iPhone hotspot with "Maximize Compatibility" ON)
+   - Firebase host + database secret
    - Telegram bot token and chat ID (create via [@BotFather](https://t.me/BotFather))
-   - OpenAI API key
-4. Select board "ESP32 Dev Module" and upload
+   - Gemini API key — free at https://aistudio.google.com/apikey (no billing required; 15 req/min / 1,500 req/day)
+4. Open `source/main/main.ino` → Board = `ESP32 Dev Module` → Upload.
+5. Open Serial Monitor at **9600 baud** to watch `[WiFi]`, `[Firebase]`, `[Telegram]`, `[Gemini]` logs.
+
+## Cloud Monitoring
+
+| Service | Where to watch |
+|---|---|
+| Firebase RTDB | Firebase Console → Realtime Database → Data — `/latest` refreshes every 1 s |
+| Telegram | Chat with the bot; `/status` round-trips in ~3 s |
+| Gemini | https://aistudio.google.com/apikey → click key → request count + quota |
 
 ## Workload
 
@@ -96,22 +126,23 @@ Advisory text here\n
 | Member 1 | MCXC444 | HC-SR04, Photoresistor, Sound ISR, vDistanceTask, vEnvTask |
 | Member 2 | MCXC444 | vAlertTask, vCommsTask, RGB LED, UART, RTOS mutexes |
 | Member 3 | ESP32 | DHT11, LCD Display (I2C), Active Buzzer, UART parsing |
-| Member 4 | ESP32 | Firebase RTDB, Telegram Bot API, OpenAI API, Wi-Fi/HTTP |
+| Member 4 | ESP32 | Firebase RTDB, Telegram Bot API, Gemini API, Wi-Fi/HTTP |
 
 ## Project Structure
 
 ```
-source/                  MCXC444 FreeRTOS application
-  main.c                 Entry point, task creation, RTOS primitives
-  common.h               Shared types and extern handles
-  distanceTask.c/.h      HC-SR04 ultrasonic sensor task
-esp32/                   ESP32 Arduino application
-  esp32.ino              Main loop
-  config.h.example       Template for secrets (copy to config.h)
-  wifi_manager.cpp/.h    Wi-Fi management
-  firebase_client.cpp/.h Firebase RTDB logging
-  telegram_bot.cpp/.h    Telegram Bot commands and alerts
-  openai_client.cpp/.h   OpenAI advisory generation
-  uart_handler.cpp/.h    UART receive/parse from MCXC444
-  lcd_display.cpp/.h     LCD display control
+source/
+  main/                      ESP32 Arduino sketch
+    main.ino                 Entry: setup() + loop() + cloud orchestration
+    config.h                 DeskState struct, pin map, thresholds
+    secrets.h.example        Template for credentials (copy to secrets.h)
+    wifi_manager.cpp/.h      Wi-Fi connect + auto-reconnect
+    firebase_client.cpp/.h   Firebase RTDB logging via HTTPS REST
+    telegram_bot.cpp/.h      Telegram getUpdates + sendMessage + command parser
+    gemini_client.cpp/.h     Gemini generateContent call + response parse
+    uart_receive.cpp/.h      Parse $MCXC frames, send $ESP frames
+    sensors.cpp/.h           DHT11, HC-SR04, threshold evaluation
+    display.cpp/.h           LCD 16x2 output
+    comms.cpp/.h             Shared UART helpers
+  (MCXC444 FreeRTOS application — sibling folder)
 ```

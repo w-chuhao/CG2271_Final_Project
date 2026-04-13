@@ -1,56 +1,43 @@
 #include <Arduino.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/semphr.h"
 #include "config.h"
 #include "uart_receive.h"
 #include "sensors.h"
 #include "wifi_manager.h"
 #include "firebase_client.h"
 #include "telegram_bot.h"
-#include "openai_client.h"
+#include "gemini_client.h"
 #include "secrets.h"
 
 DeskState espDesk = {NAN, NAN, -1.0f, 0, 0, false, 0, WARNING_STATE_IDLE, false};
 
-static SemaphoreHandle_t g_espDeskMutex = nullptr;
-static uint32_t lastEspPrintMs = 0;
+static uint32_t lastEspPrintMs   = 0;
+static uint32_t lastFirebaseMs   = 0;
+static uint32_t lastTelegramMs   = 0;
+static uint8_t  lastWarningState = WARNING_STATE_IDLE;
 
 static void applyBuzzer(bool enabled) {
   digitalWrite(BUZZER_PIN, enabled ? HIGH : LOW);
 }
 
-static DeskState readDeskStateSnapshot() {
-  DeskState snapshot;
-
-  if ((g_espDeskMutex != nullptr) &&
-      (xSemaphoreTake(g_espDeskMutex, pdMS_TO_TICKS(20)) == pdTRUE)) {
-    snapshot = espDesk;
-    xSemaphoreGive(g_espDeskMutex);
-  } else {
-    snapshot = espDesk;
-  }
-
-  return snapshot;
-}
-
-static void printEspSensors(const DeskState &state) {
+static void printEspSensors() {
   Serial.print("TEMP=");
-  if (isnan(state.temp)) Serial.print("ERR");
-  else                   Serial.print(state.temp, 1);
+  if (isnan(espDesk.temp)) Serial.print("ERR");
+  else                     Serial.print(espDesk.temp, 1);
 
   Serial.print(" | DIST=");
-  if (state.distance < 0) Serial.print("ERR");
-  else                    Serial.print(state.distance, 2);
+  if (espDesk.distance < 0) Serial.print("ERR");
+  else                      Serial.print(espDesk.distance, 2);
 
-  Serial.print(" | LIGHT=");    Serial.print(state.light);
-  Serial.print(" | SOUND=");    Serial.print(state.soundP2P);
-  Serial.print(" | STARTED=");  Serial.print(state.systemActive ? 1 : 0);
-  Serial.print(" | CNT=");      Serial.print(state.activeCount);
-  Serial.print(" | SUPP=");     Serial.println(state.warningSuppressed ? 1 : 0);
+  Serial.print(" | LIGHT=");    Serial.print(espDesk.light);
+  Serial.print(" | SOUND=");    Serial.print(espDesk.soundP2P);
+  Serial.print(" | STARTED=");  Serial.print(espDesk.systemActive ? 1 : 0);
+  Serial.print(" | CNT=");      Serial.print(espDesk.activeCount);
+  Serial.print(" | SUPP=");     Serial.println(espDesk.warningSuppressed ? 1 : 0);
 }
 
-static void handleTelegramCommand(const TgResult &r, const DeskState &snapshot) {
+// ---- Cloud handlers ----
+
+static void handleTelegramCommand(const TgResult &r) {
   switch (r.command) {
     case CMD_START:
       sendTelegramMessage(
@@ -61,11 +48,12 @@ static void handleTelegramCommand(const TgResult &r, const DeskState &snapshot) 
       break;
 
     case CMD_STATUS:
-      sendTelegramMessage(formatStatus(snapshot));
+      sendTelegramMessage(formatStatus(espDesk));
       break;
 
     case CMD_SETTEMP:
       sendTelegramMessage("✅ Temp threshold received: " + String(r.value, 1) + " °C");
+      // Threshold changes flow back to MCXC via UART (future extension)
       break;
 
     case CMD_SETDIST:
@@ -79,7 +67,7 @@ static void handleTelegramCommand(const TgResult &r, const DeskState &snapshot) 
 
     case CMD_ASK: {
       sendTelegramMessage("🤔 Thinking...");
-      String answer = askOpenAI(snapshot, r.text);
+      String answer = askGemini(espDesk, r.text);
       if (answer.length() == 0) answer = "(AI unavailable or rate-limited — try again shortly)";
       sendTelegramMessage("🤖 " + answer);
       break;
@@ -91,56 +79,44 @@ static void handleTelegramCommand(const TgResult &r, const DeskState &snapshot) 
   }
 }
 
-static void cloudTask(void *param) {
-  (void)param;
+static void runCloudLoop() {
+  wifiEnsureUp();
+  if (!wifiIsConnected()) return;
 
-  uint32_t lastFirebaseMs = 0;
-  uint32_t lastTelegramMs = 0;
-  uint8_t lastWarningState = WARNING_STATE_IDLE;
+  const uint32_t now = millis();
 
-  for (;;) {
-    wifiEnsureUp();
+  // 1. Periodic Firebase log
+  if (now - lastFirebaseMs >= FIREBASE_LOG_INTERVAL_MS) {
+    lastFirebaseMs = now;
+    logToFirebase(espDesk);
+  }
 
-    if (wifiIsConnected()) {
-      const uint32_t now = millis();
-      const DeskState snapshot = readDeskStateSnapshot();
+  // 2. Poll Telegram for incoming commands
+  if (now - lastTelegramMs >= TELEGRAM_POLL_INTERVAL_MS) {
+    lastTelegramMs = now;
+    TgResult r = pollTelegram();
+    if (r.received) handleTelegramCommand(r);
+  }
 
-      if (now - lastFirebaseMs >= FIREBASE_LOG_INTERVAL_MS) {
-        lastFirebaseMs = now;
-        logToFirebase(snapshot);
-      }
+  // 3. Rising-edge alert on warning state transitions into RED / RED_BUZZER
+  if (espDesk.warningState != lastWarningState) {
+    const bool escalated =
+      (espDesk.warningState >= WARNING_STATE_RED) &&
+      (lastWarningState      <  WARNING_STATE_RED);
 
-      if (now - lastTelegramMs >= TELEGRAM_POLL_INTERVAL_MS) {
-        lastTelegramMs = now;
-        TgResult r = pollTelegram();
-        if (r.received) {
-          handleTelegramCommand(r, snapshot);
-        }
-      }
-
-      if (snapshot.warningState != lastWarningState) {
-        const bool escalated =
-          (snapshot.warningState >= WARNING_STATE_RED) &&
-          (lastWarningState   <  WARNING_STATE_RED);
-
-        if (escalated && !snapshot.warningSuppressed) {
-          sendTelegramAlert(snapshot);
-          String tip = askOpenAIForAdvice(snapshot);
-          if (tip.length() > 0) sendTelegramMessage("🤖 " + tip);
-        }
-        lastWarningState = snapshot.warningState;
-      }
+    if (escalated && !espDesk.warningSuppressed) {
+      sendTelegramAlert(espDesk);
+      // AI advice on critical events (rate-limited inside askGemini)
+      String tip = askGeminiForAdvice(espDesk);
+      if (tip.length() > 0) sendTelegramMessage("🤖 " + tip);
     }
-
-    vTaskDelay(pdMS_TO_TICKS(100));
+    lastWarningState = espDesk.warningState;
   }
 }
 
 void setup() {
   Serial.begin(9600);
   delay(300);
-
-  g_espDeskMutex = xSemaphoreCreateMutex();
 
   uartReceiveInit();
   sensorsInit();
@@ -149,42 +125,27 @@ void setup() {
   wifiInit();
   initFirebase();
   initTelegram();
-  initOpenAI();
-
-  xTaskCreatePinnedToCore(cloudTask,
-                          "cloud",
-                          8192,
-                          nullptr,
-                          1,
-                          nullptr,
-                          0);
+  initGemini();
 
   Serial.println("ESP32 warning bridge + cloud ready");
 }
 
 void loop() {
-  if ((g_espDeskMutex != nullptr) &&
-      (xSemaphoreTake(g_espDeskMutex, pdMS_TO_TICKS(20)) == pdTRUE)) {
-    uartReceiveLoop(espDesk);
-    sensorsRead(espDesk);
-    uartSendEspSensors(espDesk);
-    xSemaphoreGive(g_espDeskMutex);
-  } else {
-    uartReceiveLoop(espDesk);
-    sensorsRead(espDesk);
-    uartSendEspSensors(espDesk);
-  }
+  uartReceiveLoop(espDesk);
+  sensorsRead(espDesk);
+  uartSendEspSensors(espDesk);
 
-  const DeskState snapshot = readDeskStateSnapshot();
-  const bool buzzerOn = snapshot.systemActive &&
-                        !snapshot.warningSuppressed &&
-                        (snapshot.warningState >= WARNING_STATE_RED_BUZZER);
+  const bool buzzerOn = espDesk.systemActive &&
+                        !espDesk.warningSuppressed &&
+                        (espDesk.warningState >= WARNING_STATE_RED_BUZZER);
   applyBuzzer(buzzerOn);
 
-  if ((millis() - lastEspPrintMs >= 1000UL) && snapshot.systemActive) {
+  if (millis() - lastEspPrintMs >= 1000UL) {
     lastEspPrintMs = millis();
-    printEspSensors(snapshot);
+    if (espDesk.systemActive) printEspSensors();
   }
 
-  delay(50);
+  runCloudLoop();
+
+  delay(LOOP_DELAY_MS);
 }
