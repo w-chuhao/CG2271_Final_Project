@@ -17,28 +17,24 @@
 #include "semphr.h"
 
 #include "app_types.h"
+#include "buttons.h"
+#include "esp_uart.h"
 #include "led.h"
 #include "adc.h"
 #include "slcd.h"
-#include "tasks.h"
+#include "ssd1306.h"
+#include "app_tasks.h"
 
-/* ------------------------------------------------------------------ */
-/* Shared FreeRTOS objects                                             */
-/* ------------------------------------------------------------------ */
 QueueHandle_t     g_sensorQueue  = NULL;
 SemaphoreHandle_t g_buttonSema   = NULL;
 SemaphoreHandle_t g_statusMutex  = NULL;
 
-/* ------------------------------------------------------------------ */
-/* Shared application state                                            */
-/* ------------------------------------------------------------------ */
-bool         g_systemStarted = false;
-bool         g_alertLatched  = false;
-SensorPacket g_latestPacket  = { 0 };
+bool           g_systemStarted = false;
+bool           g_alertSuppressed = false;
+WarningState   g_warningState = WARNING_STATE_IDLE;
+OledScreenMode g_oledScreenMode = OLED_SCREEN_SENSORS;
+SensorPacket   g_latestPacket  = { 0 };
 
-/* ------------------------------------------------------------------ */
-/* main                                                                 */
-/* ------------------------------------------------------------------ */
 int main(void) {
     BOARD_InitBootPins();
     BOARD_InitBootClocks();
@@ -50,8 +46,9 @@ int main(void) {
 
     LED_Init();
     LED_OffAll();
-    ADC_Init();
-    SLCD_Init();      /* initialise the on-board 4-digit LCD */
+    SLCD_Init();
+    SSD1306_Init();
+    SSD1306_ShowAll(false, false, 0U, 0U, 0U, false, 0.0f, false, 0.0f, false);
 
     g_sensorQueue = xQueueCreate(1, sizeof(SensorPacket));
     g_buttonSema  = xSemaphoreCreateBinary();
@@ -62,7 +59,10 @@ int main(void) {
         while (1) { __asm volatile ("nop"); }
     }
 
+    Buttons_Init(g_buttonSema);
+
     xTaskCreate(sensorTask, "sensor", configMINIMAL_STACK_SIZE + 250, NULL, 2, NULL);
+    xTaskCreate(remoteTask, "remote", configMINIMAL_STACK_SIZE + 180, NULL, 3, NULL);
     xTaskCreate(buttonTask, "button", configMINIMAL_STACK_SIZE + 200, NULL, 3, NULL);
     xTaskCreate(alertTask,  "alert",  configMINIMAL_STACK_SIZE + 200, NULL, 2, NULL);
     xTaskCreate(printTask,  "print",  configMINIMAL_STACK_SIZE + 350, NULL, 1, NULL);

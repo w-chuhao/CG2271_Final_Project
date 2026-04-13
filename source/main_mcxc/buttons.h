@@ -6,13 +6,13 @@
 #include "semphr.h"
 #include "MCXC444.h"
 
-
 extern SemaphoreHandle_t g_buttonSema;
-
 
 extern volatile bool g_sw2StartPending;
 extern volatile bool g_sw3AckPending;
 
 void Buttons_Init(SemaphoreHandle_t sema);
+bool Buttons_IsSw2Pressed(void);
+bool Buttons_IsSw3Pressed(void);
 
 #endif
