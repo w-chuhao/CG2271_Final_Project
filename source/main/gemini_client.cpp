@@ -1,4 +1,4 @@
-#include "openai_client.h"
+#include "gemini_client.h"
 #include "secrets.h"
 #include "wifi_manager.h"
 
@@ -22,10 +22,10 @@ static const char *warningDesc(uint8_t s) {
   }
 }
 
-void initOpenAI() {
+void initGemini() {
   aiClient.setInsecure();
   lastCallMs = 0;
-  Serial.println("[OpenAI] Client ready.");
+  Serial.println("[Gemini] Client ready.");
 }
 
 static String buildContext(const DeskState &s) {
@@ -42,47 +42,57 @@ static String buildContext(const DeskState &s) {
   return ctx;
 }
 
-String askOpenAI(const DeskState &state, const String &question) {
+String askGemini(const DeskState &state, const String &question) {
   if (!wifiIsConnected()) return "";
 
   const uint32_t now = millis();
-  if (lastCallMs != 0 && (now - lastCallMs) < OPENAI_MIN_INTERVAL_MS) {
-    Serial.println("[OpenAI] Rate-limited — skipping.");
+  if (lastCallMs != 0 && (now - lastCallMs) < GEMINI_MIN_INTERVAL_MS) {
+    Serial.println("[Gemini] Rate-limited — skipping.");
     return "";
   }
   lastCallMs = now;
 
+  // ---- Build Gemini request body ----
   JsonDocument payload;
-  payload["model"] = OPENAI_MODEL;
-  payload["max_tokens"] = OPENAI_MAX_TOKENS;
-  payload["temperature"] = 0.5;
 
-  JsonArray msgs = payload["messages"].to<JsonArray>();
-  JsonObject sys = msgs.add<JsonObject>();
-  sys["role"] = "system";
-  sys["content"] =
+  JsonObject sys = payload["systemInstruction"].to<JsonObject>();
+  JsonArray sysParts = sys["parts"].to<JsonArray>();
+  JsonObject sysPart = sysParts.add<JsonObject>();
+  sysPart["text"] =
     "You are a concise study-environment assistant for a smart desk. "
     "Give actionable, friendly advice in 2-3 sentences. "
     "Focus on temperature, posture (distance to screen), light, and noise.";
 
-  JsonObject user = msgs.add<JsonObject>();
-  user["role"] = "user";
-  String content = buildContext(state);
-  content += ". Question: ";
-  content += question;
-  user["content"] = content;
+  JsonArray contents = payload["contents"].to<JsonArray>();
+  JsonObject turn = contents.add<JsonObject>();
+  turn["role"] = "user";
+  JsonArray parts = turn["parts"].to<JsonArray>();
+  JsonObject part = parts.add<JsonObject>();
+  String userText = buildContext(state);
+  userText += ". Question: ";
+  userText += question;
+  part["text"] = userText;
+
+  JsonObject gen = payload["generationConfig"].to<JsonObject>();
+  gen["maxOutputTokens"] = GEMINI_MAX_TOKENS;
+  gen["temperature"]     = 0.5;
 
   String body;
   serializeJson(payload, body);
 
+  // ---- Send ----
   HTTPClient http;
-  http.begin(aiClient, "https://api.openai.com/v1/chat/completions");
+  String url = "https://generativelanguage.googleapis.com/v1beta/models/";
+  url += GEMINI_MODEL;
+  url += ":generateContent?key=";
+  url += GEMINI_API_KEY;
+
+  http.begin(aiClient, url);
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", "Bearer " + String(OPENAI_API_KEY));
 
   const int code = http.POST(body);
   if (code != 200) {
-    Serial.printf("[OpenAI] HTTP error: %d\n", code);
+    Serial.printf("[Gemini] HTTP error: %d\n", code);
     http.end();
     return "";
   }
@@ -90,21 +100,23 @@ String askOpenAI(const DeskState &state, const String &question) {
   String resp = http.getString();
   http.end();
 
+  // ---- Parse response ----
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, resp);
   if (err) {
-    Serial.printf("[OpenAI] JSON parse error: %s\n", err.c_str());
+    Serial.printf("[Gemini] JSON parse error: %s\n", err.c_str());
     return "";
   }
 
-  const char *reply = doc["choices"][0]["message"]["content"] | "";
+  const char *reply =
+    doc["candidates"][0]["content"]["parts"][0]["text"] | "";
   String out = String(reply);
   out.trim();
   return out;
 }
 
-String askOpenAIForAdvice(const DeskState &state) {
-  return askOpenAI(state,
+String askGeminiForAdvice(const DeskState &state) {
+  return askGemini(state,
     "Based on these readings, what should I adjust right now to stay "
     "comfortable and focused? Keep it short.");
 }

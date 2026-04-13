@@ -5,7 +5,7 @@
 #include "wifi_manager.h"
 #include "firebase_client.h"
 #include "telegram_bot.h"
-#include "openai_client.h"
+#include "gemini_client.h"
 #include "secrets.h"
 
 DeskState espDesk = {NAN, NAN, -1.0f, 0, 0, false, 0, WARNING_STATE_IDLE, false};
@@ -67,7 +67,7 @@ static void handleTelegramCommand(const TgResult &r) {
 
     case CMD_ASK: {
       sendTelegramMessage("🤔 Thinking...");
-      String answer = askOpenAI(espDesk, r.text);
+      String answer = askGemini(espDesk, r.text);
       if (answer.length() == 0) answer = "(AI unavailable or rate-limited — try again shortly)";
       sendTelegramMessage("🤖 " + answer);
       break;
@@ -106,8 +106,8 @@ static void runCloudLoop() {
 
     if (escalated && !espDesk.warningSuppressed) {
       sendTelegramAlert(espDesk);
-      // AI advice on critical events (rate-limited inside askOpenAI)
-      String tip = askOpenAIForAdvice(espDesk);
+      // AI advice on critical events (rate-limited inside askGemini)
+      String tip = askGeminiForAdvice(espDesk);
       if (tip.length() > 0) sendTelegramMessage("🤖 " + tip);
     }
     lastWarningState = espDesk.warningState;
@@ -125,7 +125,7 @@ void setup() {
   wifiInit();
   initFirebase();
   initTelegram();
-  initOpenAI();
+  initGemini();
 
   Serial.println("ESP32 warning bridge + cloud ready");
 }
