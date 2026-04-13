@@ -16,14 +16,8 @@
 #include "app_types.h"
 #include "led.h"
 #include "adc.h"
-<<<<<<< HEAD
-#include "ssd1306.h"
-#include "tasks.h"
-=======
-#include "slcd.h"
 #include "ssd1306.h"
 #include "app_tasks.h"
->>>>>>> testing
 
 QueueHandle_t     g_sensorQueue  = NULL;
 SemaphoreHandle_t g_buttonSema   = NULL;
@@ -46,14 +40,8 @@ int main(void) {
 
     LED_Init();
     LED_OffAll();
-<<<<<<< HEAD
-    ADC_Init();
-    SSD1306_Init();
-=======
-    SLCD_Init();
     SSD1306_Init();
     SSD1306_ShowAll(false, false, 0U, 0U, 0U, false, 0.0f, false, 0.0f, false);
->>>>>>> testing
 
     g_sensorQueue = xQueueCreate(1, sizeof(SensorPacket));
     g_buttonSema  = xSemaphoreCreateBinary();
