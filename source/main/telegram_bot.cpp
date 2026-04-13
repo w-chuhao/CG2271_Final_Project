@@ -126,8 +126,10 @@ TgResult pollTelegram() {
   if (!wifiIsConnected()) return r;
 
   HTTPClient http;
+  // limit=10 drains short backlogs in one poll cycle so /ask doesn't get
+  // stuck behind older /start messages.
   String url = "https://api.telegram.org/bot" + String(TELEGRAM_BOT_TOKEN) +
-               "/getUpdates?timeout=1&limit=1";
+               "/getUpdates?timeout=1&limit=10";
   if (lastUpdateId > 0) {
     url += "&offset=" + String(lastUpdateId + 1);
   }
@@ -135,6 +137,7 @@ TgResult pollTelegram() {
   http.begin(tgClient, url);
   const int code = http.GET();
   if (code != 200) {
+    Serial.printf("[Telegram] getUpdates HTTP error: %d\n", code);
     http.end();
     return r;
   }
@@ -152,18 +155,35 @@ TgResult pollTelegram() {
   JsonArray results = doc["result"].as<JsonArray>();
   if (results.size() == 0) return r;
 
-  JsonObject update = results[0];
-  lastUpdateId = update["update_id"].as<long>();
+  // Walk the batch: always advance offset past every update, but only
+  // act on the most recent message from the authorized chat.
+  for (JsonObject update : results) {
+    const long uid = update["update_id"].as<long>();
+    if (uid > lastUpdateId) lastUpdateId = uid;
 
-  // Filter to authorized chat only
-  const char *chat = update["message"]["chat"]["id"] | "";
-  if (String(chat) != String(TELEGRAM_CHAT_ID)) {
-    Serial.printf("[Telegram] Ignored message from %s\n", chat);
-    return r;
+    const char *chat = update["message"]["chat"]["id"] | "";
+    const char *text = update["message"]["text"]        | "";
+
+    Serial.printf("[Telegram] update_id=%ld chat=%s text=\"%s\"\n",
+                  uid, chat, text);
+
+    if (String(chat) != String(TELEGRAM_CHAT_ID)) {
+      Serial.printf("[Telegram] Ignored — not from authorized chat\n");
+      continue;
+    }
+
+    // Parse + remember; later iterations overwrite, so we end up with
+    // the latest valid command in the batch.
+    String tmpText;
+    float  tmpValue;
+    TgCmd  cmd = parseCommand(String(text), tmpValue, tmpText);
+    if (cmd != CMD_NONE || strlen(text) > 0) {
+      r.received = true;
+      r.command  = cmd;
+      r.value    = tmpValue;
+      r.text     = tmpText;
+    }
   }
 
-  const char *text = update["message"]["text"] | "";
-  r.command = parseCommand(String(text), r.value, r.text);
-  r.received = true;
   return r;
 }
