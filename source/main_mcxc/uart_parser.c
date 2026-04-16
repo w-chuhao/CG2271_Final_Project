@@ -9,7 +9,6 @@ void MCXC_ParseIncomingUART(char incomingChar) {
     static char rxBuffer[100];
     static uint8_t rxIndex = 0;
 
-    // Ignore carriage return
     if (incomingChar == '\r') {
         return;
     }
@@ -18,7 +17,6 @@ void MCXC_ParseIncomingUART(char incomingChar) {
     if (incomingChar == '\n') {
         rxBuffer[rxIndex] = '\0'; // Null terminate the string
 
-        // Check if it's a Suggestion frame
         if (strncmp(rxBuffer, "$SUG,", 5) == 0) {
             // Copy the payload into our global display buffer
             strncpy(g_suggestionBuf, rxBuffer + 5, SUGGESTION_MAX_LEN - 1);
@@ -28,10 +26,6 @@ void MCXC_ParseIncomingUART(char incomingChar) {
             g_suggestionReady = true;
         }
 
-        // Note: If you have logic for $ESP frames, you can add an 'else if' here
-        // else if (strncmp(rxBuffer, "$ESP,", 5) == 0) { ... }
-
-        // Reset index for the next frame
         rxIndex = 0;
         return;
     }
@@ -40,6 +34,6 @@ void MCXC_ParseIncomingUART(char incomingChar) {
     if (rxIndex < (sizeof(rxBuffer) - 1)) {
         rxBuffer[rxIndex++] = incomingChar;
     } else {
-        rxIndex = 0; // Overflow occurred, reset buffer
+        rxIndex = 0; 
     }
 }

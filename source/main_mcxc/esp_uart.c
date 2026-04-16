@@ -162,7 +162,9 @@ void ESP_UART_Init(void)
 
 void ESP_UART_ServiceRx(void)
 {
-    if (!s_uartInitialized) { return; }
+    if (!s_uartInitialized) { 
+        return; 
+    }
 
     if (s_frameReady)
     {
